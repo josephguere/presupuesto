@@ -11,6 +11,7 @@
     "test:watch": "vitest",
     "db:init": "tsx scripts/db-init.ts",
     "db:check": "tsx scripts/db-init.ts --check",
+    "db:clear": "tsx scripts/db-clear.ts",
     "parse:sample": "tsx scripts/parse-sample.ts",
     "post:sample": "tsx scripts/post-sample.ts"
   },

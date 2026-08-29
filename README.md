@@ -55,10 +55,12 @@ presupuesto/
 │       └── route.test.ts              Tests de idempotencia y seguridad
 ├── components/
 │   ├── SummaryCards.tsx               Las 4 métricas del mes
+│   ├── CategorySelect.tsx             Combo de categoría (Client Component)
 │   ├── TransactionsTable.tsx          Tarjetas en móvil, tabla en escritorio
 │   └── SetupNotice.tsx                Aviso si falta configuración
 ├── lib/
 │   ├── format.ts                      Intl es-PE / America/Lima
+│   ├── categories.ts                  Lista de categorías de gasto
 │   ├── environment.ts                 Corte entre datos de prueba y reales
 │   ├── logger.ts                      Logs estructurados, sin secretos
 │   ├── transactions.ts                Lectura de movimientos y resumen
@@ -252,6 +254,8 @@ Otros comandos:
 | `npm run build` | Build de producción |
 | `npm run db:init` | Aplica `sql/init.sql` y verifica el esquema |
 | `npm run db:check` | Solo verifica el esquema |
+| `npm run db:clear` | Simulacro: qué movimientos se borrarían |
+| `npm run db:clear -- --confirm` | Vacía los movimientos **reales** (producción) |
 | `npm run parse:sample` | Prueba el parser con un `.txt` |
 | `npm run post:sample` | Envía un correo falso al endpoint |
 
@@ -581,6 +585,164 @@ Misma base de datos, dos vistas. Ver `lib/environment.ts`.
 npm run dev                      # localhost:3000 → todos los movimientos
 npm run build && npm start       # localhost:3000 → solo los reales
 ```
+
+---
+
+---
+
+## Añadir tablas o columnas
+
+**No hay que tocar nada a mano en Supabase.** El flujo es siempre el mismo:
+
+1. Edita `sql/init.sql`.
+2. Añade lo nuevo a `EXPECTED` en `scripts/db-init.ts`.
+3. Actualiza `types/transaction.ts`.
+4. `npm run db:init`.
+
+Ese es el orden. El paso 2 es el que se olvida y el que más duele: la lista de
+`EXPECTED` se mantiene **a mano** a propósito, porque si se generase leyendo la
+base de datos no podria detectar que falta algo. Sin ese paso, `db:check` dira
+«esquema correcto» aunque la migracion se haya quedado a medias.
+
+### Regla de oro: todo idempotente
+
+`sql/init.sql` se ejecuta entero cada vez. Nada debe romperse ni duplicarse al
+repetirlo.
+
+**Tabla nueva**
+
+```sql
+create table if not exists public.presupuestos (
+  id         uuid primary key default gen_random_uuid(),
+  categoria  text not null,
+  limite     numeric(12,2) not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- NO OLVIDES ESTO. Sin RLS, la tabla queda abierta a cualquiera con la anon key.
+alter table public.presupuestos enable row level security;
+
+drop trigger if exists set_updated_at on public.presupuestos;
+create trigger set_updated_at
+  before update on public.presupuestos
+  for each row execute function public.set_updated_at();
+```
+
+**Columna nueva, sin datos que rellenar**
+
+```sql
+alter table public.transactions
+  add column if not exists notas text;
+```
+
+**Columna nueva CON relleno de datos** — aquí `if not exists` no basta, porque el
+`update` volvería a ejecutarse cada vez y machacaría cambios posteriores. Se
+envuelve en un bloque que solo actúa la primera vez:
+
+```sql
+do $$
+begin
+  if not exists (
+    select 1 from information_schema.columns
+     where table_schema = 'public'
+       and table_name   = 'transactions'
+       and column_name  = 'category_confirmed_at'
+  ) then
+    alter table public.transactions add column category_confirmed_at timestamptz;
+
+    -- Relleno UNICO: solo corre la primera vez.
+    update public.transactions set category_confirmed_at = now() where category is not null;
+  end if;
+end $$;
+```
+
+Es exactamente el patrón que usa la migración de `is_test`.
+
+### Orden al desplegar
+
+Si el código nuevo necesita la columna nueva:
+
+```bash
+npm run db:init      # 1. primero la base de datos
+git push             # 2. después el código
+```
+
+Al revés, producción quedaría pidiendo una columna que aún no existe. Local y
+producción comparten la misma Supabase, así que `db:init` desde tu máquina ya
+migra la base que usa Vercel — no hay un paso de migración en el despliegue.
+
+### Qué NO es automático
+
+| | |
+|---|---|
+| Crear la tabla / columna | ✅ `npm run db:init` |
+| Verificar que quedó | ✅ `npm run db:check` |
+| Tipos de TypeScript | ❌ a mano en `types/transaction.ts` |
+| Lista de `EXPECTED` | ❌ a mano en `scripts/db-init.ts` |
+| RLS en tablas nuevas | ❌ a mano en el SQL |
+| Borrar columnas | ❌ a mano, y con cuidado |
+
+Los tipos son manuales porque este MVP no usa generación de tipos de Supabase.
+Si algún día son muchas tablas, `npx supabase gen types typescript` los genera.
+
+---
+
+## Categorías
+
+Cada movimiento tiene un desplegable para asignarle categoría. Guarda solo con
+cambiarlo: en una tabla de veinte filas, un botón «Guardar» por fila sería
+insoportable. El valor se pinta de forma optimista y se revierte si el servidor
+falla.
+
+Las categorías son una **lista fija en TypeScript** (`lib/categories.ts`), no una
+tabla. Con una docena de valores que casi nunca cambian, una tabla solo añadiría
+un JOIN a cada consulta y una pantalla de mantenimiento que nadie usaría. En la
+base de datos se guarda el texto en `transactions.category`; `NULL` es «sin
+categoría».
+
+### Seguridad de la Server Action
+
+`updateTransactionCategory` es un **endpoint público** —eso es toda Server
+Action— y escribe con la `service_role` key, que se salta el RLS. Por eso valida
+contra un esquema cerrado antes de tocar nada:
+
+- el id tiene que ser un UUID;
+- la categoría, una de la lista. Nunca texto libre del cliente.
+
+Lo peor que puede conseguir alguien es cambiar una categoría por otra válida.
+Hay tests que lo comprueban con intentos de inyección y con ids inventados.
+
+### Lo que viene después
+
+Sugerir la categoría automáticamente a partir del comercio, con una tabla
+`merchant_categories` que aprenda de tus correcciones. Ver la conversación de
+diseño: reglas antes que IA, porque el gasto personal es muy repetitivo y una
+sugerencia determinista da totales en los que se puede confiar.
+
+---
+
+## Empezar producción desde cero
+
+Si quieres que el dashboard público nazca vacío y se llene solo con lo que traiga
+Apps Script:
+
+```bash
+npm run db:clear                 # simulacro: enseña qué se borraría
+npm run db:clear -- --confirm    # borra los movimientos reales
+```
+
+Tus muestras locales (`is_test = true`) se quedan. Otros ámbitos:
+
+```bash
+npm run db:clear -- --test --confirm   # borra solo las muestras locales
+npm run db:clear -- --all --confirm    # borra todo
+```
+
+Sin `--confirm` nunca borra nada. Y siempre lista antes lo que va a borrar.
+
+**Importante:** después de vaciar, ejecuta **`forgetSentIds()`** en Apps Script.
+Si no, recuerda esos correos como ya enviados y no los reenviará.
 
 ---
 

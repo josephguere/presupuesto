@@ -23,9 +23,31 @@ import { resolve } from "node:path";
 import { Client } from "pg";
 import { loadEnvLocal } from "./loadEnv";
 
-/** Lo que `sql/init.sql` tiene que haber dejado creado. */
+/**
+ * Lo que `sql/init.sql` tiene que haber dejado creado.
+ *
+ * ESTA LISTA HAY QUE MANTENERLA A MANO, y es justo lo que la hace útil: si se
+ * generase leyendo la base de datos, no podría detectar que falta algo. Cada vez
+ * que añadas una tabla, columna o índice al SQL, añádelo también aquí. Si no,
+ * `db:check` dirá «esquema correcto» aunque la migración se haya quedado a medias.
+ */
 const EXPECTED = {
   tables: ["email_ingestions", "transactions"],
+  /** Columnas que el código da por hechas. `tabla.columna`. */
+  columns: [
+    "email_ingestions.gmail_message_id",
+    "email_ingestions.raw_body",
+    "email_ingestions.processing_status",
+    "email_ingestions.is_test",
+    "transactions.email_ingestion_id",
+    "transactions.transaction_at",
+    "transactions.amount",
+    "transactions.merchant",
+    "transactions.card_last4",
+    "transactions.operation_number",
+    "transactions.category",
+    "transactions.is_test",
+  ],
   constraints: [
     "email_ingestions_gmail_message_id_key",
     "email_ingestions_processing_status_check",
@@ -36,6 +58,7 @@ const EXPECTED = {
     "transactions_transaction_at_idx",
     "transactions_merchant_idx",
     "transactions_operation_number_idx",
+    "transactions_is_test_idx",
     "email_ingestions_processing_status_idx",
   ],
 };
@@ -104,6 +127,13 @@ async function verify(client: Client): Promise<void> {
       where table_schema = 'public' and table_type = 'BASE TABLE'`,
   );
 
+  const columns = await queryNames(
+    client,
+    `select table_name || '.' || column_name as name
+       from information_schema.columns
+      where table_schema = 'public'`,
+  );
+
   const constraints = await queryNames(
     client,
     `select conname as name
@@ -125,6 +155,7 @@ async function verify(client: Client): Promise<void> {
   let ok = true;
 
   ok = report("Tablas", EXPECTED.tables, tables) && ok;
+  ok = report("Columnas", EXPECTED.columns, columns) && ok;
   ok = report("Restricciones", EXPECTED.constraints, constraints) && ok;
   ok = report("Índices", EXPECTED.indexes, indexes) && ok;
 

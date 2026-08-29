@@ -5,6 +5,7 @@ import {
   maskCard,
 } from "@/lib/format";
 import type { Transaction } from "@/types/transaction";
+import { CategorySelect } from "./CategorySelect";
 
 /**
  * Lista de movimientos.
@@ -58,6 +59,13 @@ export function TransactionsTable({ transactions }: { transactions: Transaction[
               <span className="truncate">{transaction.operationType}</span>
               <span className="tabular-nums">{maskCard(transaction.cardLast4)}</span>
             </div>
+
+            <div className="mt-3">
+              <CategorySelect
+                transactionId={transaction.id}
+                category={transaction.category}
+              />
+            </div>
           </li>
         ))}
       </ul>
@@ -67,7 +75,7 @@ export function TransactionsTable({ transactions }: { transactions: Transaction[
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-zinc-200 text-left dark:border-zinc-800">
-              {["Fecha", "Hora", "Empresa", "Banco", "Tipo", "Tarjeta"].map((heading) => (
+              {["Fecha", "Hora", "Empresa", "Categoría", "Tipo", "Tarjeta"].map((heading) => (
                 <th
                   key={heading}
                   scope="col"
@@ -96,7 +104,12 @@ export function TransactionsTable({ transactions }: { transactions: Transaction[
                 <td className="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-50">
                   {transaction.merchant}
                 </td>
-                <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">{transaction.bank}</td>
+                <td className="px-4 py-2">
+                  <CategorySelect
+                    transactionId={transaction.id}
+                    category={transaction.category}
+                  />
+                </td>
                 <td className="px-4 py-3 text-zinc-600 dark:text-zinc-400">
                   {transaction.operationType}
                 </td>
