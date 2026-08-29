@@ -46,6 +46,9 @@ const timeFormatter = new Intl.DateTimeFormat(LOCALE, {
   timeZone: LIMA_TIME_ZONE,
   hour: "2-digit",
   minute: "2-digit",
+  // 24 horas. El correo dice "11:20 PM" y aqui se lee "23:20", que es lo que
+  // hay guardado y no admite ambiguedad al ojear una lista de movimientos.
+  hour12: false,
 });
 
 /** Fecha corta en hora de Lima: `26 Ago 2026`. */
@@ -62,7 +65,7 @@ export function formatTransactionDate(iso: string | null): string {
     .replace(/\p{L}+/gu, (word) => word[0].toUpperCase() + word.slice(1));
 }
 
-/** Hora en Lima: `06:28 p. m.`. */
+/** Hora en Lima, formato 24 h: `23:20`. */
 export function formatTransactionTime(iso: string | null): string {
   if (!iso) return "";
   const date = new Date(iso);

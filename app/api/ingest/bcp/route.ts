@@ -10,6 +10,7 @@ import {
   matchesSubjectFilter,
 } from "@/lib/ingest/security";
 import { describeError, logger } from "@/lib/logger";
+import { shouldMarkAsTest } from "@/lib/environment";
 import type { EmailIngestionRow, ProcessingStatus } from "@/types/transaction";
 
 /**
@@ -286,6 +287,8 @@ async function storeEmail(payload: IngestPayload): Promise<EmailIngestionRow> {
         // Vuelve a RECEIVED: estamos a punto de (re)procesarlo.
         processing_status: "RECEIVED" satisfies ProcessingStatus,
         processing_error: null,
+        // Lo decide el entorno del servidor, nunca el payload.
+        is_test: shouldMarkAsTest(),
       },
       { onConflict: "gmail_message_id" },
     )
@@ -345,6 +348,7 @@ async function upsertTransaction(
       operation_number: transaction.operationNumber,
       category: null,
       source: transaction.source,
+      is_test: shouldMarkAsTest(),
     })
     .select("id")
     .single<{ id: string }>();

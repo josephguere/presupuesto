@@ -1,5 +1,6 @@
 import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { LIMA_TIME_ZONE } from "@/lib/format";
+import { shouldShowTestData } from "@/lib/environment";
 import type { MonthlySummary, Transaction, TransactionRow } from "@/types/transaction";
 
 /**
@@ -101,6 +102,11 @@ export async function getTransactions(filters: TransactionFilters = {}): Promise
     query = query.eq("merchant", filters.merchant);
   }
 
+  // En produccion el dashboard solo ensena movimientos reales; en local, todos.
+  if (!shouldShowTestData()) {
+    query = query.eq("is_test", false);
+  }
+
   const { data, error } = await query.returns<TransactionRow[]>();
   if (error) throw new Error(`No se pudieron leer los movimientos: ${error.message}`);
 
@@ -134,13 +140,16 @@ export async function getMonthlySummary(month: string): Promise<MonthlySummary> 
 
 /** Meses con movimientos, del más reciente al más antiguo, para el filtro. */
 export async function getAvailableMonths(): Promise<string[]> {
-  const { data, error } = await getSupabaseAdmin()
+  let monthsQuery = getSupabaseAdmin()
     .from("transactions")
     .select("transaction_at")
     .not("transaction_at", "is", null)
     .order("transaction_at", { ascending: false })
-    .limit(MAX_ROWS)
-    .returns<Array<{ transaction_at: string }>>();
+    .limit(MAX_ROWS);
+
+  if (!shouldShowTestData()) monthsQuery = monthsQuery.eq("is_test", false);
+
+  const { data, error } = await monthsQuery.returns<Array<{ transaction_at: string }>>();
 
   if (error) throw new Error(`No se pudieron leer los meses: ${error.message}`);
 
@@ -160,12 +169,15 @@ export async function getAvailableMonths(): Promise<string[]> {
 
 /** Comercios con movimientos, en orden alfabético, para el filtro. */
 export async function getAvailableMerchants(): Promise<string[]> {
-  const { data, error } = await getSupabaseAdmin()
+  let merchantsQuery = getSupabaseAdmin()
     .from("transactions")
     .select("merchant")
     .not("merchant", "is", null)
-    .limit(MAX_ROWS)
-    .returns<Array<{ merchant: string }>>();
+    .limit(MAX_ROWS);
+
+  if (!shouldShowTestData()) merchantsQuery = merchantsQuery.eq("is_test", false);
+
+  const { data, error } = await merchantsQuery.returns<Array<{ merchant: string }>>();
 
   if (error) throw new Error(`No se pudieron leer los comercios: ${error.message}`);
 

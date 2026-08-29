@@ -59,6 +59,7 @@ presupuesto/
 │   └── SetupNotice.tsx                Aviso si falta configuración
 ├── lib/
 │   ├── format.ts                      Intl es-PE / America/Lima
+│   ├── environment.ts                 Corte entre datos de prueba y reales
 │   ├── logger.ts                      Logs estructurados, sin secretos
 │   ├── transactions.ts                Lectura de movimientos y resumen
 │   ├── ingest/security.ts             Clave, remitente, filtro de asunto
@@ -278,10 +279,24 @@ En el editor de Apps Script: **⚙ Configuración del proyecto** →
 
 Opcionales:
 
-| Propiedad | Por defecto |
-|---|---|
-| `GMAIL_QUERY` | `from:notificaciones@notificacionesbcp.com.pe "Realizaste un consumo" newer_than:2d` |
-| `PROCESSED_LABEL` | `BCP-Ingestado` |
+| Propiedad | Por defecto | Para qué |
+|---|---|---|
+| `GMAIL_QUERY` | `from:notificaciones@notificacionesbcp.com.pe "Realizaste un consumo" newer_than:2d` | Ajustar la búsqueda |
+| `PROCESSED_LABEL` | `BCP-Ingestado` | Nombre de la etiqueta |
+| `VERCEL_BYPASS` | *(vacío)* | Saltarse la Deployment Protection de Vercel |
+
+**Sobre `VERCEL_BYPASS`.** Vercel protege los despliegues con un login propio. Si
+la dejas activa, tu dashboard solo lo ves tú —lo cual es deseable, porque el MVP
+no tiene autenticación propia— pero Apps Script recibiría un redirect 302 en
+lugar de tu API.
+
+La solución: Vercel → Settings → **Deployment Protection** → **Protection Bypass
+for Automation** → genera el secreto y ponlo en esta propiedad. El script lo
+envía en la cabecera `x-vercel-protection-bypass` y pasa, mientras el dashboard
+sigue protegido.
+
+La alternativa es desactivar la protección, pero entonces cualquiera con la URL
+ve tus gastos.
 
 Las claves van aquí, **nunca escritas en el código**: cualquiera con acceso al
 proyecto vería el archivo.
@@ -426,7 +441,7 @@ reintentar no cambiaría nada. Se arregla corrigiendo el parser y reprocesando.
 ## 14. Probar el parser sin Gmail
 
 ```bash
-npm test                                          # 67 tests
+npm test                                          # 83 tests
 npm run parse:sample                              # samples/bcp-consumo.txt
 npm run parse:sample -- ruta/a/tu-correo.txt      # tu propio correo
 ```
@@ -470,6 +485,15 @@ Cuidado con espacios al copiar. Si cambiaste la variable en Vercel, redespliega.
 
 **Apps Script devuelve 404.**
 `API_URL` mal. Debe terminar en `/api/ingest/bcp`, sin barra final.
+
+**Apps Script devuelve 302 o 307, o `curl` responde «Redirecting...».**
+Deployment Protection de Vercel. Configura `VERCEL_BYPASS` (ver arriba) o
+desactívala en Settings → Deployment Protection.
+
+**Funcionaba y de pronto da 404.**
+Seguramente copiaste en `API_URL` la URL con hash del despliegue
+(`presupuesto-k3j9x2mq1.vercel.app`), que cambia en cada `git push`. Usa el
+dominio corto de **Production**, sin hash.
 
 **Apps Script devuelve 403 `SENDER_NOT_ALLOWED`.**
 El BCP escribe desde otra dirección. Míralo con `previewSearch` y añádela a
@@ -525,6 +549,38 @@ select transaction_at, transaction_at at time zone 'America/Lima' from transacti
 **El build falla en Vercel por variables de entorno.**
 No debería: los clientes de Supabase se crean de forma perezosa y las páginas son
 dinámicas. Si ocurre, revisa el log de build; el error nombra la variable.
+
+---
+
+---
+
+## Datos de prueba vs. datos reales
+
+Local y producción **comparten la misma base de datos** de Supabase. Sin nada que
+los separe, los movimientos que creas con `npm run post:sample` aparecerían en el
+dashboard público mezclados con tus consumos de verdad, falseando los totales.
+
+Cada fila lleva por eso un `is_test`, y quien lo decide es el **entorno donde se
+ingirió el correo**, nunca el payload:
+
+| Origen | Entorno | `is_test` | ¿Se ve en producción? |
+|---|---|---|---|
+| `npm run post:sample` | localhost (`next dev`) | `true` | No |
+| Google Apps Script | Vercel | `false` | Sí |
+
+Que lo decida el servidor y no un campo del JSON es deliberado: nadie puede
+marcar datos como reales —ni como falsos— desde fuera. El schema es `strict()`,
+así que un payload que intente colar `is_test` recibe un 400.
+
+El dashboard filtra `is_test = false` solo en producción; en local los ves todos.
+Misma base de datos, dos vistas. Ver `lib/environment.ts`.
+
+**Para comprobarlo:**
+
+```bash
+npm run dev                      # localhost:3000 → todos los movimientos
+npm run build && npm start       # localhost:3000 → solo los reales
+```
 
 ---
 

@@ -345,6 +345,37 @@ describe("POST /api/ingest/bcp — seguridad", () => {
   });
 });
 
+describe("POST /api/ingest/bcp - separacion prueba / produccion", () => {
+  // Local y produccion comparten base de datos. Lo que decide si una fila es de
+  // prueba es el ENTORNO DEL SERVIDOR que la ingirio, nunca el payload: asi
+  // nadie puede marcar datos como reales desde fuera.
+
+  it("en desarrollo marca la fila como prueba", () => {
+    vi.stubEnv("NODE_ENV", "development");
+    return POST(buildRequest()).then(() => {
+      expect(state.db.tables.email_ingestions[0].is_test).toBe(true);
+      expect(state.db.tables.transactions[0].is_test).toBe(true);
+    });
+  });
+
+  it("en produccion la marca como real", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    return POST(buildRequest()).then(() => {
+      expect(state.db.tables.email_ingestions[0].is_test).toBe(false);
+      expect(state.db.tables.transactions[0].is_test).toBe(false);
+    });
+  });
+
+  it("el payload no puede falsear la marca", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+
+    // Un cliente malicioso intenta colar el campo. El schema es strict().
+    const response = await POST(buildRequest({ is_test: true }));
+    expect(response.status).toBe(400);
+    expect(state.db.tables.transactions).toHaveLength(0);
+  });
+});
+
 describe("POST /api/ingest/bcp — payload", () => {
   it("400 si el JSON está roto", async () => {
     const response = await POST(

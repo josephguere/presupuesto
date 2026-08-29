@@ -67,7 +67,7 @@ export function TransactionsTable({ transactions }: { transactions: Transaction[
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-zinc-200 text-left dark:border-zinc-800">
-              {["Fecha", "Empresa", "Banco", "Tipo", "Tarjeta"].map((heading) => (
+              {["Fecha", "Hora", "Empresa", "Banco", "Tipo", "Tarjeta"].map((heading) => (
                 <th
                   key={heading}
                   scope="col"
@@ -89,6 +89,9 @@ export function TransactionsTable({ transactions }: { transactions: Transaction[
               <tr key={transaction.id}>
                 <td className="px-4 py-3 whitespace-nowrap text-zinc-600 dark:text-zinc-400">
                   {formatTransactionDate(transaction.transactionAt)}
+                </td>
+                <td className="px-4 py-3 tabular-nums whitespace-nowrap text-zinc-600 dark:text-zinc-400">
+                  {formatTransactionTime(transaction.transactionAt) || "—"}
                 </td>
                 <td className="px-4 py-3 font-medium text-zinc-900 dark:text-zinc-50">
                   {transaction.merchant}

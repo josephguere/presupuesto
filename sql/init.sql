@@ -95,6 +95,49 @@ create index if not exists email_ingestions_processing_status_idx
   on public.email_ingestions (processing_status);
 
 -- ---------------------------------------------------------------------------
+--  3.5. Separacion entre datos de prueba y datos reales
+--
+--  Local y produccion comparten esta misma base de datos. Sin esta marca, los
+--  movimientos creados con `npm run post:sample` apareceria en el dashboard
+--  publico y falsearian los totales del mes.
+--
+--  Quien fija el valor es el ENTORNO donde se ingirio el correo, no el payload:
+--  localhost -> true, Vercel -> false. Ver lib/environment.ts.
+--
+--  El bloque solo actua la PRIMERA vez, cuando la columna aun no existe. Al
+--  volver a ejecutar init.sql no toca ningun dato ya clasificado.
+-- ---------------------------------------------------------------------------
+do $$
+begin
+  if not exists (
+    select 1 from information_schema.columns
+     where table_schema = 'public'
+       and table_name   = 'email_ingestions'
+       and column_name  = 'is_test'
+  ) then
+    alter table public.email_ingestions
+      add column is_test boolean not null default false;
+    alter table public.transactions
+      add column is_test boolean not null default false;
+
+    -- Backfill unico. Gmail asigna identificadores hexadecimales largos; los de
+    -- las pruebas locales son legibles ("fake-msg-001", "muestra-rappi").
+    update public.email_ingestions
+       set is_test = true
+     where gmail_message_id !~ '^[0-9a-f]{12,}$';
+
+    update public.transactions t
+       set is_test = e.is_test
+      from public.email_ingestions e
+     where e.id = t.email_ingestion_id;
+  end if;
+end $$;
+
+-- El dashboard filtra por esta columna en cada consulta.
+create index if not exists transactions_is_test_idx
+  on public.transactions (is_test);
+
+-- ---------------------------------------------------------------------------
 --  4. updated_at automático
 -- ---------------------------------------------------------------------------
 create or replace function public.set_updated_at()

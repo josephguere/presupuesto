@@ -192,7 +192,7 @@ function sendMessage_(message, thread, config) {
     var response = UrlFetchApp.fetch(config.apiUrl, {
       method: 'post',
       contentType: 'application/json',
-      headers: { 'x-ingest-key': config.ingestKey },
+      headers: buildHeaders_(config),
       payload: JSON.stringify(payload),
       // Sin esto, un 4xx/5xx lanza una excepción y corta el bucle entero.
       muteHttpExceptions: true
@@ -216,6 +216,29 @@ function sendMessage_(message, thread, config) {
     Logger.log('ERR ' + messageId + ' → ' + error);
     return false;
   }
+}
+
+/**
+ * Cabeceras de toda peticion a la API.
+ *
+ * Ademas de la clave de ingesta, anade el bypass de Vercel si esta configurado.
+ * Eso permite dejar activa la Deployment Protection —para que solo tu veas el
+ * dashboard— sin bloquear a este script.
+ *
+ * Se configura con la propiedad opcional VERCEL_BYPASS, cuyo valor sale de
+ * Vercel -> Settings -> Deployment Protection -> Protection Bypass for
+ * Automation. Sin ella, todo funciona igual que antes.
+ */
+function buildHeaders_(config) {
+  var headers = { 'x-ingest-key': config.ingestKey };
+
+  if (config.vercelBypass) {
+    headers['x-vercel-protection-bypass'] = config.vercelBypass;
+    // Evita que Vercel deje una cookie de sesion en cada llamada.
+    headers['x-vercel-set-bypass-cookie'] = 'false';
+  }
+
+  return headers;
 }
 
 /**
@@ -258,7 +281,9 @@ function getConfig_() {
     apiUrl: properties.getProperty('API_URL'),
     ingestKey: properties.getProperty('INGEST_KEY'),
     gmailQuery: properties.getProperty('GMAIL_QUERY') || DEFAULT_GMAIL_QUERY,
-    processedLabel: properties.getProperty('PROCESSED_LABEL') || DEFAULT_PROCESSED_LABEL
+    processedLabel: properties.getProperty('PROCESSED_LABEL') || DEFAULT_PROCESSED_LABEL,
+    // Opcional: solo si dejas activa la Deployment Protection de Vercel.
+    vercelBypass: properties.getProperty('VERCEL_BYPASS') || ''
   };
 }
 
@@ -330,14 +355,25 @@ function testConnection() {
 
   var response = UrlFetchApp.fetch(config.apiUrl, {
     method: 'get',
-    headers: { 'x-ingest-key': config.ingestKey },
+    headers: buildHeaders_(config),
     muteHttpExceptions: true
   });
 
   Logger.log('HTTP ' + response.getResponseCode() + ' → ' + response.getContentText());
-  Logger.log(response.getResponseCode() === 200
-    ? 'Conexión correcta.'
-    : '401 = INGEST_KEY no coincide. 404 = revisa API_URL.');
+  var code = response.getResponseCode();
+  if (code === 200) {
+    Logger.log('Conexión correcta.');
+  } else if (code === 302 || code === 307) {
+    Logger.log('Vercel está redirigiendo a su login: tienes activa la Deployment');
+    Logger.log('Protection. O la desactivas, o generas un Protection Bypass for');
+    Logger.log('Automation y lo pones en la propiedad VERCEL_BYPASS.');
+  } else if (code === 401) {
+    Logger.log('401 = INGEST_KEY no coincide con GMAIL_INGEST_KEY en Vercel.');
+  } else if (code === 404) {
+    Logger.log('404 = revisa API_URL. Debe acabar en /api/ingest/bcp.');
+  } else {
+    Logger.log('Revisa API_URL y las variables de entorno en Vercel.');
+  }
 }
 
 /**

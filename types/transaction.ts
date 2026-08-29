@@ -46,6 +46,8 @@ export interface EmailIngestionRow {
   source: string | null;
   processing_status: ProcessingStatus;
   processing_error: string | null;
+  /** `true` si se ingirio desde un entorno de desarrollo. Ver lib/environment.ts. */
+  is_test: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -68,6 +70,8 @@ export interface TransactionRow {
   operation_number: string | null;
   category: string | null;
   source: string | null;
+  /** `true` si se ingirio desde un entorno de desarrollo. Ver lib/environment.ts. */
+  is_test: boolean;
   created_at: string;
   updated_at: string;
 }
