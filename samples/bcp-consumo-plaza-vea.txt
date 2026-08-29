@@ -1,0 +1,22 @@
+Realizaste un consumo de S/ 1,250.50 con tu
+Tarjeta de Débito BCP en PLAZA VEA SAN BORJA.
+
+Datos de la operación:
+
+Total del consumo:
+S/ 1,250.50
+
+Operación realizada:
+Consumo Tarjeta de Débito
+
+Fecha y hora:
+5 de septiembre de 2026 - 09:15 AM
+
+Número de Tarjeta de Débito:
+************7821
+
+Empresa:
+PLAZA VEA SAN BORJA
+
+Número de operación:
+1048372

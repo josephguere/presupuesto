@@ -32,6 +32,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +40,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# correos de muestra
+# Denegar por defecto: un correo real del banco lleva tu nombre, los últimos
+# dígitos de tu tarjeta y dónde compras. Solo se commitean las muestras
+# ficticias de las que dependen los tests, listadas una a una.
+samples/*
+!samples/bcp-consumo.txt
+!samples/bcp-consumo-credito.txt
+!samples/bcp-consumo-plaza-vea.txt
+!samples/bcp-consumo-html.txt

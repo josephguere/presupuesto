@@ -1,0 +1,20 @@
+   Realizaste un consumo de S/ 45,00 con tu Tarjeta de Débito BCP en RAPPI PERU​.
+
+
+     Datos de la operación:
+
+
+   Total del consumo:   S/ 45,00   
+
+   OPERACION REALIZADA:  Consumo Tarjeta de Debito
+
+
+   Fecha y hora:  12 de octubre de 2026 - 08:05 p. m.
+
+   NUMERO DE TARJETA DE DEBITO:   **** **** **** 3400
+
+
+   Empresa:   RAPPI PERU  
+
+   Numero de operacion:  0071945﻿
+

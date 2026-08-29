@@ -1,0 +1,37 @@
+Hola *Nombre Apellido,*
+
+Realizaste un consumo de *S/ 35.90* con tu *Tarjeta de Crédito BCP* en
+*DLC*helphbomaxcom.*
+
+Por tu seguridad, te enviamos los *datos de tu operación.*
+
+
+*Monto*
+
+Total del consumo *S/ 35.90*
+
+
+*Datos de la operación*
+
+Operación realizada *Consumo Tarjeta de Crédito*
+Fecha y hora *28 de agosto de 2026 - 11:20 PM*
+Número de Tarjeta de Crédito *************2437*
+Empresa *DLC*helphbomaxcom*
+Número de operación *0000414074*
+
+
+¿Problemas con tus compras?
+
+
+Si tu compra fue rechazada, cancelada o duplicada, el tiempo estimado de
+devolución será de 3 a 7 días.
+
+
+*¿No reconoces esta operación?*
+
+Comunícate de inmediato con nosotros a la Banca por Teléfono.
+
+Recuerda que el BCP nunca te solicitará por teléfono, correo o mensaje el
+número de tu tarjeta de débito o crédito, fecha de vencimiento, código CVV,
+código de validación OTP o clave Token, para resolver supuestos problemas
+con tus operaciones.

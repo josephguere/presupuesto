@@ -1,0 +1,22 @@
+Realizaste un consumo de S/ 20.00 con tu
+Tarjeta de Débito BCP en YAPE.
+
+Datos de la operación:
+
+Total del consumo:
+S/ 20.00
+
+Operación realizada:
+Consumo Tarjeta de Débito
+
+Fecha y hora:
+26 de agosto de 2026 - 06:28 PM
+
+Número de Tarjeta de Débito:
+************3400
+
+Empresa:
+YAPE
+
+Número de operación:
+539458
