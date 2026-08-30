@@ -25,7 +25,20 @@ vi.mock("@/lib/supabase/server", () => ({
   isSupabaseConfigured: () => true,
 }));
 
-// Debe importarse DESPUÉS de declarar el mock.
+/** El tipo de cambio se controla por test, sin salir a la red. */
+const rates = vi.hoisted(() => ({
+  next: { rate: 3.72, source: "API" as "API" | "FALLBACK", date: "2026-08-28" },
+}));
+
+vi.mock("@/lib/exchangeRate", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/exchangeRate")>();
+  return {
+    ...actual,
+    getUsdToPenRate: async () => rates.next,
+  };
+});
+
+// Debe importarse DESPUÉS de declarar los mocks.
 const { POST } = await import("./route");
 
 /* -------------------------------------------------------------------------- */
@@ -169,6 +182,7 @@ function buildRequest(
 
 beforeEach(() => {
   state.db = createFakeDatabase();
+  rates.next = { rate: 3.72, source: "API", date: "2026-08-28" };
   vi.stubEnv("GMAIL_INGEST_KEY", INGEST_KEY);
   vi.stubEnv("BCP_ALLOWED_SENDERS", "");
   vi.stubEnv("BCP_SUBJECT_FILTER", "");
@@ -252,6 +266,25 @@ describe("POST /api/ingest/bcp — idempotencia", () => {
     expect(state.db.tables.email_ingestions).toHaveLength(2);
     expect(state.db.tables.transactions).toHaveLength(2);
   });
+
+  it("la eliminación lógica no rompe la idempotencia", async () => {
+    const first = await (await POST(buildRequest())).json();
+
+    // El usuario elimina el movimiento: la fila se desactiva, no se borra.
+    const [transaction] = state.db.tables.transactions;
+    transaction.activo = false;
+    transaction.eliminado_at = "2026-08-27T09:00:00-05:00";
+
+    const second = await (await POST(buildRequest())).json();
+
+    // El correo se reconoce igual y no se crea un movimiento paralelo.
+    expect(second.status).toBe("ALREADY_PROCESSED");
+    expect(state.db.tables.transactions).toHaveLength(1);
+    expect(second.transactionId).toBe(first.transactionId);
+
+    // Y tampoco se resucita solo: eso lo decide el usuario desde «Eliminados».
+    expect(transaction.activo).toBe(false);
+  });
 });
 
 describe("POST /api/ingest/bcp — correo ilegible", () => {
@@ -286,6 +319,118 @@ describe("POST /api/ingest/bcp — correo ilegible", () => {
       processing_error: null,
       // El correo guardado es el que originó la transacción, no el intento viejo.
       raw_body: SAMPLE_BODY,
+    });
+  });
+});
+
+describe("POST /api/ingest/bcp - moneda y conversion", () => {
+  /** Correo del BCP con el importe en la moneda indicada. */
+  function emailWith(total: string, merchant = "NETFLIX.COM"): string {
+    return [
+      `Realizaste un consumo de ${total} con tu *Tarjeta de Credito BCP* en *${merchant}*`,
+      `Total del consumo *${total}*`,
+      "Operacion realizada *Consumo Tarjeta de Credito*",
+      "Fecha y hora *28 de agosto de 2026 - 06:20 PM*",
+      "Numero de Tarjeta de Credito *************2437*",
+      `Empresa *${merchant}*`,
+      "Numero de operacion *0000414074*",
+    ].join("\n");
+  }
+
+  it("un correo en soles se guarda tal cual, sin conversion", async () => {
+    await POST(buildRequest({ rawBody: emailWith("S/ 50.00", "PLAZA VEA") }));
+
+    expect(state.db.tables.transactions[0]).toMatchObject({
+      merchant: "PLAZA VEA",
+      amount: 50,
+      currency: "PEN",
+      // Sin conversion, la trazabilidad queda vacia.
+      original_amount: null,
+      original_currency: null,
+      exchange_rate: null,
+      exchange_rate_source: null,
+    });
+  });
+
+  it("un correo en dolares se convierte con el tipo de cambio de la API", async () => {
+    rates.next = { rate: 3.72, source: "API", date: "2026-08-28" };
+
+    await POST(buildRequest({ rawBody: emailWith("$ 16.25") }));
+
+    // 16.25 * 3.72 = 60.45
+    expect(state.db.tables.transactions[0]).toMatchObject({
+      amount: 60.45,
+      currency: "PEN",
+      original_amount: 16.25,
+      original_currency: "USD",
+      exchange_rate: 3.72,
+      exchange_rate_date: "2026-08-28",
+      exchange_rate_source: "API",
+    });
+  });
+
+  it("si la API falla se usa el fallback y la transaccion se procesa igual", async () => {
+    rates.next = { rate: 3.4, source: "FALLBACK", date: "2026-08-28" };
+
+    const response = await POST(buildRequest({ rawBody: emailWith("$ 16.25") }));
+    const body = await response.json();
+
+    // Lo importante: NO se pierde el movimiento.
+    expect(body).toMatchObject({ ok: true, status: "PROCESSED" });
+
+    // 16.25 * 3.4 = 55.25
+    expect(state.db.tables.transactions[0]).toMatchObject({
+      amount: 55.25,
+      currency: "PEN",
+      original_amount: 16.25,
+      original_currency: "USD",
+      exchange_rate: 3.4,
+      exchange_rate_source: "FALLBACK",
+    });
+  });
+
+  it("la interfaz solo ve soles: currency siempre es PEN", async () => {
+    for (const total of ["S/ 50.00", "$ 16.25", "US$ 30.00"]) {
+      state.db = createFakeDatabase();
+      await POST(buildRequest({ rawBody: emailWith(total) }));
+      expect(state.db.tables.transactions[0].currency).toBe("PEN");
+    }
+  });
+});
+
+describe("POST /api/ingest/bcp - numero de operacion y campos nuevos", () => {
+  it("extrae el numero de operacion cuando el correo lo trae", async () => {
+    await POST(buildRequest());
+    expect(state.db.tables.transactions[0].operation_number).toBe("539458");
+  });
+
+  it("un correo sin numero de operacion no se guarda a medias", async () => {
+    // El numero es obligatorio para el parser: sin el, PARSE_ERROR controlado.
+    const sinNumero = [
+      "Realizaste un consumo de S/ 20.00 con tu Tarjeta de Debito BCP en YAPE.",
+      "Total del consumo: S/ 20.00",
+      "Fecha y hora: 26 de agosto de 2026 - 06:28 PM",
+      "Empresa: YAPE",
+    ].join("\n");
+
+    const response = await POST(buildRequest({ rawBody: sinNumero }));
+    const body = await response.json();
+
+    expect(body).toMatchObject({ ok: false, status: "PARSE_ERROR" });
+    expect(body.error.missingFields).toContain("operationNumber");
+    // El correo crudo se conserva para poder reprocesarlo.
+    expect(state.db.tables.email_ingestions[0].raw_body).toBe(sinNumero);
+    expect(state.db.tables.transactions).toHaveLength(0);
+  });
+
+  it("nace como EMAIL, sin categoria y sin comentario", async () => {
+    await POST(buildRequest());
+
+    expect(state.db.tables.transactions[0]).toMatchObject({
+      origin: "EMAIL",
+      // Nada se clasifica solo: la categoria la pone el usuario.
+      category: null,
+      comment: null,
     });
   });
 });

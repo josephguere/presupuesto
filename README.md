@@ -50,12 +50,24 @@ presupuesto/
 │   ├── layout.tsx                     Layout, navegación, tema
 │   ├── page.tsx                       Dashboard: resumen del mes
 │   ├── movimientos/page.tsx           Listado completo con filtros
+│   ├── eliminados/page.tsx            Papelera: bajas lógicas y restaurar
+│   ├── login/page.tsx                 Pantalla de acceso por PIN
+│   ├── actions.ts                     Crear, editar, eliminar, restaurar
+│   ├── api/auth/login/route.ts        Canjea el PIN por una sesión
+│   └── api/auth/logout/route.ts       Borra la cookie
 │   └── api/ingest/bcp/
 │       ├── route.ts                   POST de ingesta + GET de salud
 │       └── route.test.ts              Tests de idempotencia y seguridad
 ├── components/
-│   ├── SummaryCards.tsx               Las 4 métricas del mes
-│   ├── CategorySelect.tsx             Combo de categoría (Client Component)
+│   ├── SummaryCards.tsx               Indicadores del período
+│   ├── CategoryTotals.tsx             Resumen por categoría
+│   ├── FiltersBar.tsx                 Mes, rango, categoría y grupo
+│   ├── MovementForm.tsx               Formulario de crear y editar
+│   ├── MovementDialog.tsx             Modal que envuelve al formulario
+│   ├── DeleteMovementButton.tsx       Baja lógica, con confirmación
+│   ├── RestoreMovementButton.tsx      Restaurar, con confirmación
+│   ├── AppHeader.tsx                  Navegación y cerrar sesión
+│   ├── PinForm.tsx                    Las 4 casillas del PIN
 │   ├── TransactionsTable.tsx          Tarjetas en móvil, tabla en escritorio
 │   └── SetupNotice.tsx                Aviso si falta configuración
 ├── lib/
@@ -64,6 +76,12 @@ presupuesto/
 │   ├── environment.ts                 Corte entre datos de prueba y reales
 │   ├── logger.ts                      Logs estructurados, sin secretos
 │   ├── transactions.ts                Lectura de movimientos y resumen
+│   ├── movementSchema.ts              Validación compartida del formulario
+│   ├── exchangeRate.ts                Tipo de cambio USD→PEN con caché
+│   ├── auth/pin.ts                    Hash y verificación del PIN (scrypt)
+│   ├── auth/session.ts                Cookie firmada (HMAC, Web Crypto)
+│   ├── auth/lockout.ts                Freno de fuerza bruta
+│   └── auth/guard.ts                  Sesión en páginas y Server Actions
 │   ├── ingest/security.ts             Clave, remitente, filtro de asunto
 │   ├── parsers/
 │   │   ├── types.ts                   Contrato común de los parsers
@@ -75,10 +93,13 @@ presupuesto/
 │       ├── client.ts                  Fábrica compartida (sin secretos)
 │       └── server.ts                  Cliente service-role, solo servidor
 ├── types/transaction.ts               Tipos de dominio y filas de BD
+├── proxy.ts                           Puerta de entrada: exige sesión
 ├── sql/init.sql                       Esquema completo
 ├── google-apps-script/gmail-bcp.gs    Script de Gmail
 ├── scripts/
 │   ├── db-init.ts                     Aplicar y verificar el esquema
+│   ├── db-clear.ts                    Vaciar datos de prueba o reales
+│   ├── auth-hash.ts                   Generar AUTH_PIN_HASH
 │   ├── loadEnv.ts                     Cargar .env.local en los scripts
 │   ├── parse-sample.ts                Probar el parser sin Gmail
 │   └── post-sample.ts                 Probar el endpoint sin Gmail
@@ -243,6 +264,7 @@ npm run dev
 
 - Dashboard: <http://localhost:3000>
 - Movimientos: <http://localhost:3000/movimientos>
+- Eliminados: <http://localhost:3000/eliminados>
 
 Otros comandos:
 
@@ -358,7 +380,7 @@ Anota la URL, p. ej. `https://presupuesto-tuusuario.vercel.app`.
 
 ## 12. Configurar las variables en Vercel
 
-**Project** → **Settings** → **Environment Variables**. Añade las tres para los
+**Project** → **Settings** → **Environment Variables**. Añade las cinco para los
 entornos *Production*, *Preview* y *Development*:
 
 | Name | Value |
@@ -366,6 +388,15 @@ entornos *Production*, *Preview* y *Development*:
 | `NEXT_PUBLIC_SUPABASE_URL` | La URL de tu proyecto Supabase |
 | `SUPABASE_SERVICE_ROLE_KEY` | La service_role key |
 | `GMAIL_INGEST_KEY` | La misma clave que en Apps Script |
+| `AUTH_PIN_HASH` | Lo que imprime `npm run auth:hash` |
+| `AUTH_SESSION_SECRET` | 64 caracteres hexadecimales aleatorios |
+
+Las dos de `AUTH_` van marcadas como **Sensitive** si Vercel lo ofrece: así el
+valor deja de poder leerse desde el panel una vez guardado.
+
+> Sin `AUTH_PIN_HASH` y `AUTH_SESSION_SECRET`, la aplicación desplegada muestra
+> la pantalla de acceso con un aviso de configuración y no deja entrar a nadie.
+> Es lo correcto: preferimos una aplicación cerrada a una abierta por descuido.
 
 Si las añades después del primer despliegue, hay que **redesplegar** para que se
 apliquen: **Deployments** → *⋯* → **Redeploy**.
@@ -746,6 +777,250 @@ Si no, recuerda esos correos como ya enviados y no los reenviará.
 
 ---
 
+---
+
+## Acceso: PIN de 4 dígitos
+
+La aplicación está cerrada. Al entrar sin sesión solo se ve `/login`: cuatro
+casillas, el PIN y nada más. Ni usuario, ni correo, ni registro.
+
+### Poner en marcha el acceso
+
+```bash
+npm run auth:hash
+```
+
+Pide el PIN por teclado **sin mostrarlo**, lo pide dos veces y escupe las dos
+líneas que hay que copiar en `.env.local`:
+
+```
+AUTH_PIN_HASH=scrypt.16384.8.1.<sal>.<hash>
+AUTH_SESSION_SECRET=<64 caracteres hexadecimales>
+```
+
+El PIN no se pasa por argumento a propósito: quedaría en el historial de la
+terminal y en la lista de procesos. Y no se guarda en ningún archivo: lo único
+que existe es el hash.
+
+> **Sin estas dos variables no entra nadie**, ni siquiera en local. Es
+> deliberado: una configuración a medias no puede dejar la aplicación abierta.
+> La pantalla de acceso lo dice en vez de quedarse en silencio.
+
+### Cómo está protegido
+
+| Pieza | Cómo |
+|---|---|
+| El PIN | `scrypt` (en `node:crypto`, sin dependencias nuevas). Solo se guarda el hash, y solo en el servidor |
+| La sesión | Cookie firmada con HMAC-SHA256. `HttpOnly`, `SameSite=Lax`, `Secure` en producción, 30 días |
+| Las páginas | `proxy.ts` redirige a `/login` a quien no tenga sesión |
+| Las Server Actions | Vuelven a comprobar la cookie **antes de escribir** |
+| Los intentos | 5 fallos → 15 minutos de bloqueo, contados en Supabase |
+
+**Por qué dos capas.** La documentación de Next dice que el proxy sirve para
+comprobaciones optimistas, no como autorización. Y una Server Action es un
+endpoint público: quien conozca su identificador la invoca sin pasar por ninguna
+página. Por eso crear, editar, eliminar y restaurar verifican la sesión ellas
+mismas, en el mismo proceso que hace el `UPDATE`. Ocultar la interfaz no protege
+nada.
+
+### El bloqueo por intentos
+
+Un PIN de 4 dígitos son 10 000 combinaciones: se agotan en minutos con un script.
+El hash no lo evita — lo evita limitar los intentos.
+
+El contador es **global**, no por IP. Hay un solo usuario, y limitar por IP
+dejaría recorrer todo el espacio de PINs rotando direcciones. El precio es que
+alguien podría dejarte fuera 15 minutos a propósito; para un presupuesto
+personal, es el intercambio bueno.
+
+Se cuenta con una función de PostgreSQL en vez de leer-sumar-escribir desde la
+aplicación: así cien peticiones a la vez no leen el mismo contador y prueban cien
+PINs con un único fallo apuntado.
+
+Un PIN mal formado (tres dígitos, letras) **no gasta intento**: no puede acertar,
+y contarlo dejaría que un fallo de la interfaz te encerrara.
+
+### La ingesta va por libre
+
+`/api/ingest/bcp` **no pasa por el login**. Google Apps Script no tiene navegador
+ni cookies; su autorización es la cabecera `x-ingest-key`, como siempre. Son dos
+mecanismos para dos clientes distintos y no se mezclan:
+
+```
+Tú           → cookie de sesión firmada  → páginas y Server Actions
+Apps Script  → x-ingest-key              → /api/ingest/bcp
+```
+
+### Cerrar sesión
+
+El enlace de la cabecera borra la cookie y devuelve a `/login`. Como la sesión es
+autocontenida y no hay tabla que vaciar, cerrar sesión afecta solo a ESE
+navegador. Para invalidar todas a la vez —un móvil perdido— se cambia
+`AUTH_SESSION_SECRET`: todas las cookies emitidas dejan de verificar.
+
+---
+
+## Movimientos: campos, grupos y CRUD
+
+Cada movimiento tiene: Fecha, Hora, **Movimiento** (antes «Empresa»), Categoría,
+**Grupo**, Tipo, Tarjeta, Monto, N° de operación, Comentario y Origen.
+
+**Toda la interfaz funciona en soles.** No hay columna de moneda ni selector: un
+consumo en dólares se convierte al ingresarlo y se guarda ya en PEN.
+
+**Las tablas son de solo lectura.** Ni siquiera la categoría se edita desde la
+lista: mostrarla como desplegable invitaba a cambiarla de un clic, y a cambiar la
+equivocada al desplazarse con la rueda del ratón. El único camino para modificar
+un movimiento es **Editar**, que abre el formulario completo y valida todo junto.
+
+### Origen
+
+| Valor | Cuándo |
+|---|---|
+| `EMAIL` | Llegó por Gmail |
+| `MANUAL` | Lo creaste con «+ Nuevo movimiento» |
+
+**No es editable.** Un movimiento que vino de un correo lo sigue siendo siempre,
+y editarlo no lo convierte en manual. Se fija en el servidor, nunca desde el
+formulario.
+
+### Categoría → Grupo
+
+El grupo **no se guarda en la base de datos**: se deriva de la categoría al leer.
+Así nunca hay dos verdades que puedan discrepar, y cambiar la categoría de un
+movimiento recalcula el grupo sin migración alguna.
+
+| Grupo | Categorías |
+|---|---|
+| `INGRESOS` | Ingresos |
+| `GASTOS FIJOS` | Suscripciones · Servicios · Educación |
+| `GASTOS VARIABLES` | Supermercado · Restaurantes · Delivery · Transporte · Combustible · Salud · Farmacia · Entretenimiento · Hogar · Ropa · Tecnología · Transferencias · Otros |
+| *(sin grupo)* | Sin categoría |
+
+El formulario **muestra el grupo, pero bloqueado**: se recalcula en cuanto
+cambias la categoría. El campo no lleva atributo `name`, así que ni siquiera
+viaja al servidor. Y aunque alguien lo inyectara, el servidor lo ignora y vuelve
+a derivarlo — hay un test que intenta colar un gasto dentro de INGRESOS y
+comprueba que no lo consigue.
+
+Un movimiento **sin categoría no se reparte** entre fijos y variables: cuenta
+aparte en «Pendiente de categorizar». Repartirlo daría totales que parecen
+correctos sin serlo. Nada se clasifica automáticamente, ni siquiera lo que llega
+por correo.
+
+### Eliminar es una baja lógica
+
+«Eliminar» **no borra nada**. Marca el movimiento con `activo = false` y sella
+`eliminado_at`, y la fila sigue en la tabla con su id, su correo de origen y su
+trazabilidad de divisa intactos.
+
+| | |
+|---|---|
+| Dónde va | A la pestaña **Eliminados** |
+| Dónde deja de contar | Resumen, Movimientos, todos los indicadores y el resumen por categoría |
+| Cómo vuelve | **Restaurar**, que reactiva la MISMA fila: mismo id, mismo importe |
+
+El filtro por `activo` se aplica **en la consulta**, no al pintar, así que
+ninguna vista ni ningún indicador puede olvidarse de excluir las bajas.
+
+Los dos campos van siempre juntos, y un `CHECK` en la base de datos lo obliga:
+activo sin fecha de baja, o inactivo con ella. Nunca puede quedar un estado a
+medias que la papelera no sepa fechar.
+
+Esto además **arregla un problema del borrado físico**: al eliminar un movimiento
+venido de Gmail, su `email_ingestion` quedaba en `PROCESSED` pero sin
+transacción, y reprocesar el correo respondía `ALREADY_PROCESSED` sin volver a
+crearla — el movimiento era irrecuperable. Ahora la fila nunca desaparece, así
+que la idempotencia sigue intacta *y* el movimiento se puede recuperar. Un correo
+reprocesado tampoco resucita una baja: eso lo decide el usuario.
+
+> `npm run db:clear` es otra cosa: es la herramienta de mantenimiento para vaciar
+> datos de prueba, y esa sí borra de verdad.
+
+### Indicadores
+
+```
+Gastos Totales = Gastos Fijos + Gastos Variables
+Balance        = Ingresos - Gastos Totales
+```
+
+Se calculan sobre **exactamente los mismos movimientos que se listan**, no con
+una consulta aparte, así que el total y la lista no pueden contradecirse. Todos
+responden a los filtros activos.
+
+### Filtros
+
+Compartidos entre Resumen, Movimientos y Eliminados, con el mismo contrato de URL:
+
+| Parámetro | Ejemplo |
+|---|---|
+| `mes` | `?mes=2026-08` |
+| `desde` / `hasta` | `?desde=2026-08-01&hasta=2026-08-15` |
+| `categoria` | `?categoria=Restaurantes` |
+| `grupo` | `?grupo=GASTOS%20VARIABLES` |
+
+El rango personalizado **tiene prioridad** sobre el mes, y la interfaz atenúa el
+selector de mes cuando hay un rango activo para que se vea cuál manda.
+
+---
+
+## Conversión USD → PEN
+
+Un consumo internacional llega así:
+
+```
+Realizaste un consumo de $ 16.25 con tu Tarjeta de Crédito BCP en NETFLIX.COM.
+```
+
+El parser detecta la moneda, `lib/exchangeRate.ts` obtiene el tipo de cambio de
+**la fecha de la operación**, y se guarda ya convertido.
+
+### La API
+
+**SUNAT**, vía `api.apis.net.pe`. Sin API key, histórica por fecha, y es el tipo
+de cambio **oficial peruano**. Una API genérica de divisas daría el tipo
+interbancario, que no es el que aplica el banco.
+
+Se usa el valor de **venta**: al pagar en dólares con una tarjeta peruana, el
+banco te vende dólares.
+
+### La caché — por qué existe
+
+La API gratuita corta con **HTTP 429** tras unas pocas peticiones por minuto. Sin
+caché, casi todas las conversiones acabarían usando el fallback y el importe
+sería materialmente incorrecto (3.4 frente a ~3.35 real).
+
+El tipo de cambio de una fecha pasada no cambia nunca, así que se consulta **una
+sola vez por fecha** y se guarda en la tabla `exchange_rates`.
+
+### El fallback
+
+```
+PEN → se guarda directamente, sin conversión
+USD → SUNAT → si falla → DEFAULT_USD_PEN_RATE (3.4) → se guarda en PEN
+```
+
+`DEFAULT_USD_PEN_RATE` está definido **una sola vez**, en `lib/exchangeRate.ts`.
+Cuando se usa queda registrado en el log (`exchangeRate.fallback`) y **la
+transacción se procesa igualmente**: perder el movimiento sería peor que
+guardarlo con un importe aproximado y auditable.
+
+### Trazabilidad
+
+Aunque la interfaz solo muestre soles, cada conversión deja constancia:
+
+| Columna | Ejemplo |
+|---|---|
+| `amount` / `currency` | `54.41` / `PEN` |
+| `original_amount` / `original_currency` | `16.25` / `USD` |
+| `exchange_rate` | `3.348000` |
+| `exchange_rate_date` | `2026-08-28` |
+| `exchange_rate_source` | `API` o `FALLBACK` |
+
+Si el correo ya viene en soles, esas cinco columnas quedan a `NULL`.
+
+---
+
 ## Notas de seguridad
 
 - `SUPABASE_SERVICE_ROLE_KEY` solo se usa en el servidor y nunca lleva prefijo
@@ -753,6 +1028,14 @@ Si no, recuerda esos correos como ya enviados y no los reenviará.
 - `x-ingest-key` se compara en tiempo constante, sobre hashes SHA-256.
 - Si `GMAIL_INGEST_KEY` no está configurada, el endpoint responde 500: nunca se
   queda abierto por un olvido de configuración.
-- Los logs registran identificadores, estados y longitudes. Nunca secretos.
+- El PIN nunca se guarda: en `AUTH_PIN_HASH` vive solo su derivación scrypt, y
+  nunca sale hacia el navegador.
+- La cookie de sesión es `HttpOnly`: el JavaScript de la página no puede leerla,
+  así que un XSS no se la lleva.
+- 5 intentos fallidos bloquean el acceso 15 minutos, contados en base de datos.
+- Las Server Actions comprueban la sesión ellas mismas: proteger solo las páginas
+  dejaría los endpoints abiertos.
+- Los logs registran identificadores, estados y longitudes. Nunca secretos: ni el
+  PIN introducido, ni su hash.
 - RLS activado sin policies: sin la service_role key no se lee nada.
 - `.env.local` está en `.gitignore`.

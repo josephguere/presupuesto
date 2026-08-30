@@ -32,7 +32,7 @@ import { loadEnvLocal } from "./loadEnv";
  * `db:check` dirá «esquema correcto» aunque la migración se haya quedado a medias.
  */
 const EXPECTED = {
-  tables: ["email_ingestions", "transactions"],
+  tables: ["email_ingestions", "transactions", "exchange_rates", "auth_attempts"],
   /** Columnas que el código da por hechas. `tabla.columna`. */
   columns: [
     "email_ingestions.gmail_message_id",
@@ -47,18 +47,37 @@ const EXPECTED = {
     "transactions.operation_number",
     "transactions.category",
     "transactions.is_test",
+    "transactions.comment",
+    "transactions.origin",
+    "transactions.original_amount",
+    "transactions.original_currency",
+    "transactions.exchange_rate",
+    "transactions.exchange_rate_date",
+    "transactions.exchange_rate_source",
+    "transactions.activo",
+    "transactions.eliminado_at",
+    "exchange_rates.rate_date",
+    "exchange_rates.usd_pen",
+    "auth_attempts.failed_count",
+    "auth_attempts.locked_until",
   ],
   constraints: [
     "email_ingestions_gmail_message_id_key",
     "email_ingestions_processing_status_check",
     "transactions_email_ingestion_id_key",
     "transactions_email_ingestion_id_fkey",
+    "transactions_origin_check",
+    "transactions_exchange_rate_source_check",
+    "transactions_activo_check",
   ],
   indexes: [
     "transactions_transaction_at_idx",
     "transactions_merchant_idx",
     "transactions_operation_number_idx",
     "transactions_is_test_idx",
+    "transactions_category_idx",
+    "transactions_origin_idx",
+    "transactions_activo_idx",
     "email_ingestions_processing_status_idx",
   ],
 };

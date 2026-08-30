@@ -98,3 +98,33 @@ export function formatMonthLabel(month: string): string {
 export function maskCard(last4: string | null): string {
   return last4 ? `****${last4}` : "—";
 }
+
+/* -------------------------------------------------------------------------- */
+/* Valores para <input type="date"> y <input type="time">                      */
+/* -------------------------------------------------------------------------- */
+
+const dateInputFormatter = new Intl.DateTimeFormat("en-CA", {
+  timeZone: LIMA_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+/**
+ * ISO con offset → `YYYY-MM-DD` **en hora de Lima**.
+ *
+ * Sin fijar la zona, un consumo de las 23:20 en Lima se editaría con la fecha
+ * del día siguiente, porque el servidor de Vercel corre en UTC.
+ */
+export function toDateInputValue(iso: string | null): string {
+  const date = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(date.getTime())) return dateInputFormatter.format(new Date());
+  return dateInputFormatter.format(date);
+}
+
+/** ISO con offset → `HH:MM` en hora de Lima, 24 horas. */
+export function toTimeInputValue(iso: string | null): string {
+  const date = iso ? new Date(iso) : new Date();
+  if (Number.isNaN(date.getTime())) return timeFormatter.format(new Date());
+  return timeFormatter.format(date);
+}

@@ -10,7 +10,9 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["**/*.test.ts"],
+    // `.tsx` para las pruebas que renderizan componentes a HTML con
+    // `renderToStaticMarkup` y comprueban qué se ve y qué se puede editar.
+    include: ["**/*.test.ts", "**/*.test.tsx"],
     exclude: ["node_modules/**", ".next/**"],
   },
 });

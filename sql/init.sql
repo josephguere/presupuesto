@@ -138,6 +138,202 @@ create index if not exists transactions_is_test_idx
   on public.transactions (is_test);
 
 -- ---------------------------------------------------------------------------
+--  3.6. Movimientos manuales, comentario, origen y trazabilidad de divisa
+--
+--  Todo se anade como NULL o con DEFAULT, asi que las filas existentes siguen
+--  siendo validas sin tocarlas. No se borra ni se reescribe nada.
+--
+--  El cambio importante es `email_ingestion_id`: era NOT NULL porque hasta ahora
+--  todo movimiento venia de un correo. Los movimientos manuales no tienen
+--  correo, asi que pasa a admitir NULL. La restriccion UNIQUE sigue en pie y
+--  sigue funcionando: PostgreSQL permite varios NULL en una columna UNIQUE, de
+--  modo que un correo sigue produciendo como maximo una transaccion y los
+--  manuales no se estorban entre si.
+-- ---------------------------------------------------------------------------
+alter table public.transactions
+  alter column email_ingestion_id drop not null;
+
+alter table public.transactions
+  add column if not exists comment text;
+
+-- Como se creo el movimiento. EMAIL para todo lo existente, que vino de Gmail.
+alter table public.transactions
+  add column if not exists origin text not null default 'EMAIL';
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'transactions_origin_check'
+  ) then
+    alter table public.transactions
+      add constraint transactions_origin_check check (origin in ('EMAIL', 'MANUAL'));
+  end if;
+end $$;
+
+-- Trazabilidad de la conversion USD -> PEN. La aplicacion solo muestra soles;
+-- esto queda para poder auditar de donde salio la cifra.
+alter table public.transactions
+  add column if not exists original_amount numeric(12, 2);
+alter table public.transactions
+  add column if not exists original_currency char(3);
+alter table public.transactions
+  add column if not exists exchange_rate numeric(12, 6);
+alter table public.transactions
+  add column if not exists exchange_rate_date date;
+alter table public.transactions
+  add column if not exists exchange_rate_source text;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'transactions_exchange_rate_source_check'
+  ) then
+    alter table public.transactions
+      add constraint transactions_exchange_rate_source_check
+      check (exchange_rate_source is null or exchange_rate_source in ('API', 'FALLBACK'));
+  end if;
+end $$;
+
+-- El filtro por categoria y por grupo se resuelve sobre esta columna.
+create index if not exists transactions_category_idx
+  on public.transactions (category);
+
+create index if not exists transactions_origin_idx
+  on public.transactions (origin);
+
+-- ---------------------------------------------------------------------------
+--  3.7. Cache de tipos de cambio
+--
+--  La API gratuita de SUNAT corta con HTTP 429 tras unas pocas peticiones por
+--  minuto. El tipo de cambio de una fecha pasada no cambia nunca, asi que se
+--  consulta una sola vez por fecha y se guarda aqui. Sin esto, casi todas las
+--  conversiones acabarian usando el fallback y el importe seria incorrecto.
+-- ---------------------------------------------------------------------------
+create table if not exists public.exchange_rates (
+  rate_date  date primary key,
+  usd_pen    numeric(12, 6) not null,
+  source     text,
+  created_at timestamptz not null default now()
+);
+
+comment on table public.exchange_rates is
+  'Tipo de cambio USD->PEN por fecha. Se consulta a SUNAT una vez y se reutiliza.';
+
+alter table public.exchange_rates enable row level security;
+
+-- ---------------------------------------------------------------------------
+--  3.8. Eliminacion logica (soft delete)
+--
+--  Eliminar un movimiento ya no lo borra: lo desactiva. El registro sigue en la
+--  tabla, con su id, su correo de origen y su trazabilidad de divisa intactos,
+--  de modo que Restaurar devuelve EXACTAMENTE la misma fila y no una copia.
+--
+--  Esto tambien arregla un problema que existia con el borrado fisico: al
+--  eliminar un movimiento venido de Gmail, su email_ingestion quedaba en estado
+--  PROCESSED pero sin transaccion, y reprocesar el correo respondia
+--  ALREADY_PROCESSED sin volver a crearla. El movimiento era irrecuperable.
+--  Con la baja logica la fila nunca desaparece, asi que la idempotencia sigue
+--  intacta y el movimiento se puede recuperar.
+--
+--  `not null default true` rellena las filas existentes: todo lo que hay hoy
+--  queda activo, con eliminado_at a NULL. No se borra ni se reescribe nada.
+-- ---------------------------------------------------------------------------
+alter table public.transactions
+  add column if not exists activo boolean not null default true;
+
+alter table public.transactions
+  add column if not exists eliminado_at timestamptz;
+
+-- Los dos campos van siempre juntos. Sin esta restriccion podria aparecer un
+-- movimiento inactivo sin fecha de baja, que la pantalla Eliminados no sabria
+-- fechar, o uno activo con fecha de baja, que mentiria sobre su estado.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'transactions_activo_check'
+  ) then
+    alter table public.transactions
+      add constraint transactions_activo_check
+      check ((activo and eliminado_at is null) or (not activo and eliminado_at is not null));
+  end if;
+end $$;
+
+-- Todas las consultas del dashboard filtran por esta columna.
+create index if not exists transactions_activo_idx
+  on public.transactions (activo);
+
+-- ---------------------------------------------------------------------------
+--  3.9. Control de intentos de acceso (PIN)
+--
+--  El PIN tiene 4 digitos: 10 000 combinaciones. Un hash, por bueno que sea, no
+--  protege de eso; lo que protege es limitar los intentos. Aqui se lleva la
+--  cuenta.
+--
+--  El contador es GLOBAL, no por IP. La aplicacion tiene un unico usuario, y
+--  limitar por IP dejaria la puerta abierta a recorrer el espacio de PINs
+--  rotando direcciones. El precio es que alguien podria dejarte fuera 15
+--  minutos a proposito; para un presupuesto personal, es el intercambio bueno.
+--
+--  El PIN introducido NO se guarda aqui ni en ningun otro sitio.
+-- ---------------------------------------------------------------------------
+create table if not exists public.auth_attempts (
+  id           text primary key,
+  failed_count integer not null default 0,
+  locked_until timestamptz,
+  updated_at   timestamptz not null default now()
+);
+
+comment on table public.auth_attempts is
+  'Intentos fallidos de acceso por PIN. Nunca contiene el PIN.';
+
+alter table public.auth_attempts enable row level security;
+
+-- Registrar un intento tiene que ser ATOMICO: leer, sumar y escribir desde la
+-- aplicacion permitiria lanzar cien peticiones a la vez y que todas leyeran el
+-- mismo contador, probando cien PINs con un solo fallo contabilizado.
+-- `insert ... on conflict do update` bloquea la fila, asi que los intentos
+-- simultaneos se serializan y ninguno se pierde.
+create or replace function public.register_auth_attempt(
+  p_id           text,
+  p_success      boolean,
+  p_max          integer,
+  p_lock_minutes integer
+)
+returns table (failed_count integer, locked_until timestamptz)
+language plpgsql
+as $$
+begin
+  if p_success then
+    insert into public.auth_attempts (id, failed_count, locked_until, updated_at)
+         values (p_id, 0, null, now())
+    on conflict (id) do update
+         set failed_count = 0, locked_until = null, updated_at = now();
+  else
+    insert into public.auth_attempts as a (id, failed_count, locked_until, updated_at)
+         values (p_id, 1, null, now())
+    on conflict (id) do update
+         set failed_count = case
+               -- Si el bloqueo anterior ya vencio, se empieza a contar de cero.
+               when a.locked_until is not null and a.locked_until <= now() then 1
+               else a.failed_count + 1
+             end,
+             locked_until = null,
+             updated_at   = now();
+
+    update public.auth_attempts as a
+       set locked_until = now() + make_interval(mins => p_lock_minutes)
+     where a.id = p_id
+       and a.failed_count >= p_max;
+  end if;
+
+  return query
+    select a.failed_count, a.locked_until
+      from public.auth_attempts a
+     where a.id = p_id;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
 --  4. updated_at automático
 -- ---------------------------------------------------------------------------
 create or replace function public.set_updated_at()

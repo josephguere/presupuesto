@@ -11,6 +11,7 @@ import {
 } from "@/lib/ingest/security";
 import { describeError, logger } from "@/lib/logger";
 import { shouldMarkAsTest } from "@/lib/environment";
+import { convertUsdToPen, getUsdToPenRate } from "@/lib/exchangeRate";
 import type { EmailIngestionRow, ProcessingStatus } from "@/types/transaction";
 
 /**
@@ -334,6 +335,8 @@ async function upsertTransaction(
   emailId: string,
   transaction: ParsedTransaction,
 ): Promise<string> {
+  const money = await toSoles(transaction);
+
   const { data, error } = await getSupabaseAdmin()
     .from("transactions")
     .insert({
@@ -341,12 +344,21 @@ async function upsertTransaction(
       bank: transaction.bank,
       operation_type: transaction.operationType,
       transaction_at: transaction.transactionAt,
-      amount: transaction.amount,
-      currency: transaction.currency,
+      // Siempre soles: la aplicacion entera funciona en una sola moneda.
+      amount: money.amount,
+      currency: "PEN",
       merchant: transaction.merchant,
       card_last4: transaction.cardLast4,
       operation_number: transaction.operationNumber,
+      // Sin categoria: la asigna el usuario. Nada se clasifica solo.
       category: null,
+      comment: null,
+      origin: "EMAIL",
+      original_amount: money.originalAmount,
+      original_currency: money.originalCurrency,
+      exchange_rate: money.exchangeRate,
+      exchange_rate_date: money.exchangeRateDate,
+      exchange_rate_source: money.exchangeRateSource,
       source: transaction.source,
       is_test: shouldMarkAsTest(),
     })
@@ -365,6 +377,55 @@ async function upsertTransaction(
   }
 
   return data.id;
+}
+
+/**
+ * Deja el importe en soles, con la trazabilidad de la conversion.
+ *
+ * Si el correo ya venia en soles no se consulta nada: se guarda tal cual y los
+ * campos de conversion quedan a NULL. Solo los consumos en dolares pasan por el
+ * tipo de cambio, y esos nunca fallan del todo: si la API no responde, se aplica
+ * el fallback y la transaccion se procesa igualmente. Perder el movimiento seria
+ * peor que guardarlo con un importe aproximado y auditable.
+ */
+async function toSoles(transaction: ParsedTransaction): Promise<{
+  amount: number;
+  originalAmount: number | null;
+  originalCurrency: string | null;
+  exchangeRate: number | null;
+  exchangeRateDate: string | null;
+  exchangeRateSource: string | null;
+}> {
+  if (transaction.currency === "PEN") {
+    return {
+      amount: transaction.amount,
+      originalAmount: null,
+      originalCurrency: null,
+      exchangeRate: null,
+      exchangeRateDate: null,
+      exchangeRateSource: null,
+    };
+  }
+
+  const rate = await getUsdToPenRate(transaction.transactionAt);
+  const amount = convertUsdToPen(transaction.amount, rate.rate);
+
+  logger.info("ingest.converted_to_pen", {
+    originalAmount: transaction.amount,
+    originalCurrency: transaction.currency,
+    rate: rate.rate,
+    rateSource: rate.source,
+    amount,
+  });
+
+  return {
+    amount,
+    originalAmount: transaction.amount,
+    originalCurrency: transaction.currency,
+    exchangeRate: rate.rate,
+    exchangeRateDate: rate.date,
+    exchangeRateSource: rate.source,
+  };
 }
 
 /* -------------------------------------------------------------------------- */

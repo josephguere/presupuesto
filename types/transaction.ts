@@ -1,3 +1,5 @@
+import type { Category, Group } from "@/lib/categories";
+
 /**
  * Tipos de dominio del presupuesto.
  *
@@ -18,16 +20,29 @@ export const PROCESSING_STATUSES = [
 export type ProcessingStatus = (typeof PROCESSING_STATUSES)[number];
 
 /**
- * Origen del dato. Al añadir bancos nuevos se agregan variantes aquí
+ * Cómo entró el movimiento al sistema.
+ *
+ * `EMAIL` llegó por Gmail, `MANUAL` lo registró el usuario. No es editable: un
+ * movimiento que vino de un correo lo siguió haciendo siempre.
+ */
+export const ORIGINS = ["EMAIL", "MANUAL"] as const;
+
+export type Origin = (typeof ORIGINS)[number];
+
+/**
+ * Origen del dato bancario. Al añadir bancos se agregan variantes aquí
  * (`GMAIL_INTERBANK`, `GMAIL_BBVA`, ...) sin tocar el resto del modelo.
  */
-export type TransactionSource = "GMAIL_BCP";
+export type TransactionSource = "GMAIL_BCP" | "MANUAL";
 
-/** Bancos soportados. Hoy solo BCP; el modelo ya es multi-banco. */
+/** Bancos soportados. */
 export type Bank = "BCP";
 
 /** Moneda en formato ISO-4217. */
 export type CurrencyCode = "PEN" | "USD";
+
+/** Moneda en la que vive toda la aplicación. */
+export const BASE_CURRENCY = "PEN";
 
 /* -------------------------------------------------------------------------- */
 /* Filas de base de datos                                                      */
@@ -46,7 +61,6 @@ export interface EmailIngestionRow {
   source: string | null;
   processing_status: ProcessingStatus;
   processing_error: string | null;
-  /** `true` si se ingirio desde un entorno de desarrollo. Ver lib/environment.ts. */
   is_test: boolean;
   created_at: string;
   updated_at: string;
@@ -55,13 +69,14 @@ export interface EmailIngestionRow {
 /** Fila de `transactions`: la información ya estructurada. */
 export interface TransactionRow {
   id: string;
-  email_ingestion_id: string;
+  /** `null` en los movimientos manuales: no vienen de ningún correo. */
+  email_ingestion_id: string | null;
   bank: string | null;
   operation_type: string | null;
   transaction_at: string | null;
   /**
-   * `NUMERIC(12,2)`. supabase-js lo entrega como `string` para no perder
-   * precisión; conviértelo con `Number()` justo antes de calcular o mostrar.
+   * `NUMERIC(12,2)`, **siempre en soles**. supabase-js lo entrega como `string`
+   * para no perder precisión; conviértelo con `Number()` al leerlo.
    */
   amount: string | number | null;
   currency: string | null;
@@ -69,8 +84,19 @@ export interface TransactionRow {
   card_last4: string | null;
   operation_number: string | null;
   category: string | null;
+  comment: string | null;
+  origin: Origin;
   source: string | null;
-  /** `true` si se ingirio desde un entorno de desarrollo. Ver lib/environment.ts. */
+  /** Trazabilidad de la conversión: importe tal como venía en el correo. */
+  original_amount: string | number | null;
+  original_currency: string | null;
+  exchange_rate: string | number | null;
+  exchange_rate_date: string | null;
+  exchange_rate_source: string | null;
+  /** Eliminacion logica: `false` = dado de baja, sigue en la tabla. */
+  activo: boolean;
+  /** Cuando se dio de baja. `null` mientras esta activo. */
+  eliminado_at: string | null;
   is_test: boolean;
   created_at: string;
   updated_at: string;
@@ -80,28 +106,64 @@ export interface TransactionRow {
 /* Dominio                                                                     */
 /* -------------------------------------------------------------------------- */
 
-/** Movimiento listo para renderizar: montos ya numéricos, sin nulls sorpresa. */
+/**
+ * Movimiento listo para renderizar.
+ *
+ * `amount` está siempre en soles: la conversión desde dólares ocurre en la
+ * ingesta, no aquí. La interfaz nunca ve otra moneda.
+ */
 export interface Transaction {
   id: string;
   bank: string;
+  /** «Tipo» en la interfaz. */
   operationType: string;
   /** ISO-8601 con offset, p. ej. `2026-08-26T18:28:00-05:00`. */
   transactionAt: string | null;
+  /** Importe en soles. */
   amount: number;
-  currency: string;
+  /** «Movimiento» en la interfaz; en base de datos sigue siendo `merchant`. */
   merchant: string;
   cardLast4: string | null;
   operationNumber: string | null;
-  category: string | null;
+  comment: string | null;
+  category: Category | null;
+  /** Derivado de la categoría, nunca almacenado. */
+  group: Group | null;
+  origin: Origin;
+  /**
+   * Fecha de baja lógica, o `null` si el movimiento está activo.
+   *
+   * Las listas ya vienen filtradas por estado, así que esto no decide qué se
+   * muestra: solo permite a «Eliminados» poner fecha a cada baja.
+   */
+  deletedAt: string | null;
 }
 
-/** Métricas del encabezado del dashboard. */
-export interface MonthlySummary {
-  /** Mes en formato `YYYY-MM`. */
-  month: string;
+/** Métricas del encabezado del resumen. Todos los importes en soles. */
+export interface Summary {
+  ingresos: number;
+  gastosFijos: number;
+  gastosVariables: number;
+  /** `gastosFijos + gastosVariables`. */
+  gastosTotales: number;
+  /** `ingresos - gastosTotales`. */
+  balance: number;
+  /** Importe de los movimientos que aún no tienen categoría. */
+  pendienteCategorizar: number;
+  /** Cuántos movimientos están sin categorizar. */
+  pendienteCategorizarCount: number;
+
+  /** Métricas de gasto que ya existían antes de los grupos. */
   totalSpent: number;
   transactionCount: number;
   averageAmount: number;
   largestAmount: number;
-  currency: CurrencyCode;
+}
+
+/** Una fila del resumen por categoría. */
+export interface CategoryTotal {
+  category: Category | null;
+  group: Group | null;
+  total: number;
+  count: number;
 }

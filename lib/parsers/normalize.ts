@@ -182,7 +182,11 @@ export function parseAmount(input: string | null | undefined): ParsedAmount | nu
   if (!input) return null;
 
   const normalized = normalizeEmailBody(input);
-  const currency: "PEN" | "USD" = /us\$|usd|d[oó]lar/i.test(normalized) ? "USD" : "PEN";
+
+  // El BCP escribe los soles como `S/` y los dólares como `$`, `US$` o `USD`.
+  // El `$` a secas cuenta: es como llega de verdad un consumo internacional
+  // («Realizaste un consumo de $ 16.25 ... en NETFLIX.COM»).
+  const currency: "PEN" | "USD" = /us\$|usd|\$|d[oó]lar(?:es)?/i.test(normalized) ? "USD" : "PEN";
 
   // Primera secuencia numérica: signo opcional, dígitos y separadores. El signo
   // entra a propósito para que un importe negativo caiga en la guarda de abajo

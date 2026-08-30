@@ -99,10 +99,23 @@ describe("parseBcpConsumoEmail — formatos de monto", () => {
     expect(transaction.currency).toBe("PEN");
   });
 
-  it("detecta dólares cuando el correo llega en US$", () => {
-    const transaction = parseOrFail(buildEmail({ total: "US$ 30.50" }));
-    expect(transaction.amount).toBe(30.5);
+  it.each([
+    ["US$ 30.50", 30.5],
+    ["$ 16.25", 16.25],
+    ["$16.25", 16.25],
+    ["USD 30.50", 30.5],
+    ["30.50 dolares", 30.5],
+  ])("detecta dolares en %s", (total, expected) => {
+    // El BCP notifica los consumos internacionales con un "$" a secas.
+    const transaction = parseOrFail(buildEmail({ total }));
+    expect(transaction.amount).toBe(expected);
     expect(transaction.currency).toBe("USD");
+  });
+
+  it("no confunde los soles con dolares", () => {
+    for (const total of ["S/ 20.00", "S/. 20.00", "S/ 1,250.50"]) {
+      expect(parseOrFail(buildEmail({ total })).currency).toBe("PEN");
+    }
   });
 });
 
