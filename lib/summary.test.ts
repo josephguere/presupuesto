@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildCategoryTotals, buildSummary, isValidDate, parseFilters } from "./transactions";
+import {
+  buildCategoryTotals,
+  buildSummary,
+  getCurrentMonth,
+  isValidDate,
+  parseFilters,
+  withDefaultMonth,
+} from "./transactions";
 import { getGroupForCategory, type Category } from "./categories";
 import type { Transaction } from "@/types/transaction";
 
@@ -206,5 +213,62 @@ describe("isValidDate", () => {
     expect(isValidDate("29/08/2026")).toBe(false);
     expect(isValidDate("")).toBe(false);
     expect(isValidDate(undefined)).toBe(false);
+  });
+});
+
+describe("mes en curso por defecto", () => {
+  // El objetivo es de rendimiento: el mes acaba en el WHERE de la consulta, así
+  // que entrar a cualquiera de las dos pantallas lee un mes y no el histórico.
+  it("sin parámetros, filtra por el mes actual", () => {
+    const filters = withDefaultMonth(parseFilters({}));
+
+    expect(filters.month).toBe(getCurrentMonth());
+  });
+
+  it("respeta el mes que elija el usuario", () => {
+    const filters = withDefaultMonth(parseFilters({ mes: "2026-03" }));
+
+    expect(filters.month).toBe("2026-03");
+  });
+
+  it("«Todos los meses» consulta todo, como pide el usuario", () => {
+    // El desplegable manda `mes=` vacío. Sin distinguirlo de «no hay parámetro»,
+    // la pantalla volvería a imponer el mes actual y la opción no serviría.
+    const filters = withDefaultMonth(parseFilters({ mes: "" }));
+
+    expect(filters.month).toBeUndefined();
+  });
+
+  it("un rango personalizado manda sobre el mes por defecto", () => {
+    const filters = withDefaultMonth(
+      parseFilters({ desde: "2026-01-01", hasta: "2026-01-31" }),
+    );
+
+    expect(filters.month).toBeUndefined();
+    expect(filters.from).toBe("2026-01-01");
+    expect(filters.to).toBe("2026-01-31");
+  });
+
+  it("un mes inválido cae en el mes actual, no en «todo»", () => {
+    // Una URL manipulada no debe convertirse en una consulta del histórico.
+    for (const mes of ["2026-13", "agosto", "2026-8"]) {
+      expect(withDefaultMonth(parseFilters({ mes })).month).toBe(getCurrentMonth());
+    }
+  });
+
+  it("conserva el resto de filtros", () => {
+    const filters = withDefaultMonth(
+      parseFilters({ categoria: "Seguros", grupo: "GASTOS FIJOS" }),
+    );
+
+    expect(filters.month).toBe(getCurrentMonth());
+    expect(filters.category).toBe("Seguros");
+    expect(filters.group).toBe("GASTOS FIJOS");
+  });
+
+  it("las categorías nuevas se pueden filtrar", () => {
+    for (const categoria of ["Peajes y estacionamiento", "Café y snacks", "Movilidad Taxi"]) {
+      expect(parseFilters({ categoria }).filters.category).toBe(categoria);
+    }
   });
 });

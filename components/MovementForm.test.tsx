@@ -49,23 +49,31 @@ function render(transaction?: Transaction): string {
 }
 
 describe("categoría", () => {
-  it("al editar SÍ es un desplegable", () => {
+  it("al editar SÍ se puede elegir: es un combobox con búsqueda", () => {
     const html = render(movement());
 
-    expect(html).toContain('<select name="category"');
-    for (const category of CATEGORIES) {
-      expect(html).toContain(`<option value="${category}"`);
-    }
+    expect(html).toContain('role="combobox"');
+    // El valor viaja en un campo oculto con el nombre que espera el servidor.
+    expect(html).toContain('name="category"');
   });
 
-  it("arranca con la categoría que tiene el movimiento", () => {
+  it("muestra la categoría que tiene el movimiento", () => {
     const html = render(movement({ category: "Restaurantes" }));
-    expect(html).toContain('<option value="Restaurantes" selected');
+
+    expect(html).toContain('value="Restaurantes"');
   });
 
   it("al crear arranca sin categoría", () => {
     const html = render();
-    expect(html).toContain('<option value="__sin_categoria__" selected');
+
+    expect(html).toContain('value="__sin_categoria__"');
+    expect(html).toContain("Sin categoría");
+  });
+
+  it("las categorías nuevas se pueden elegir", () => {
+    for (const category of ["Seguros", "Peajes y estacionamiento", "Café y snacks"] as const) {
+      expect(render(movement({ category }))).toContain(`value="${category}"`);
+    }
   });
 });
 
@@ -133,6 +141,31 @@ describe("origen", () => {
 
     expect(html).not.toContain('name="origin"');
     expect(html).not.toContain("no se puede cambiar");
+  });
+});
+
+describe("tarjeta", () => {
+  it("no es obligatoria", () => {
+    // Hay movimientos que no salen de ninguna tarjeta: efectivo, Yape,
+    // transferencias, ingresos. El campo tiene que poder quedarse vacío.
+    const html = render(movement());
+    const campo = html.slice(html.indexOf('name="cardLast4"'));
+    const cierre = campo.slice(0, campo.indexOf("/>"));
+
+    expect(cierre).not.toContain("required");
+    // `pattern` tampoco: un navegador antiguo podría aplicarlo al valor vacío.
+    expect(cierre).not.toContain("pattern");
+  });
+
+  it("se anuncia como opcional", () => {
+    expect(render(movement())).toContain("opcional");
+  });
+
+  it("un movimiento sin tarjeta se edita sin sorpresas", () => {
+    const html = render(movement({ cardLast4: null }));
+
+    expect(html).toContain('name="cardLast4"');
+    expect(html).toContain("Sin tarjeta");
   });
 });
 

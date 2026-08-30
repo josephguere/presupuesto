@@ -15,8 +15,44 @@ describe("catálogo de categorías", () => {
     expect(new Set(CATEGORIES).size).toBe(CATEGORIES.length);
   });
 
-  it("contiene las 17 categorías acordadas", () => {
+  it("contiene las 26 categorías acordadas", () => {
     expect(CATEGORIES).toEqual([
+      "Ingresos",
+
+      "Suscripciones",
+      "Servicios",
+      "Educación",
+      "Seguros",
+      "Impuestos y tributos",
+
+      "Supermercado",
+      "Restaurantes",
+      "Delivery",
+      "Café y snacks",
+      "Transporte",
+      "Movilidad Taxi",
+      "Peajes y estacionamiento",
+      "Combustible",
+      "Mantenimiento Vehículo",
+      "Salud",
+      "Farmacia",
+      "Cuidado personal",
+      "Entretenimiento",
+      "Hogar",
+      "Ropa",
+      "Tecnología",
+      "Compras online",
+      "Regalos",
+      "Transferencias",
+      "Otros",
+    ]);
+  });
+
+  it("conserva las 17 categorías originales", () => {
+    // Lo que garantiza que ningún movimiento histórico se quede huérfano: si una
+    // de estas desapareciera del catálogo, sus movimientos perderían el grupo y
+    // caerían en «Pendiente de categorizar» sin que nadie los hubiera tocado.
+    const originales = [
       "Ingresos",
       "Suscripciones",
       "Servicios",
@@ -34,7 +70,42 @@ describe("catálogo de categorías", () => {
       "Tecnología",
       "Transferencias",
       "Otros",
-    ]);
+    ] as const;
+
+    for (const category of originales) {
+      expect(CATEGORIES).toContain(category);
+      expect(isValidCategory(category)).toBe(true);
+    }
+  });
+
+  it("las 9 nuevas están en su grupo", () => {
+    const nuevas = [
+      ["Impuestos y tributos", "GASTOS FIJOS"],
+      ["Seguros", "GASTOS FIJOS"],
+      ["Compras online", "GASTOS VARIABLES"],
+      ["Café y snacks", "GASTOS VARIABLES"],
+      ["Peajes y estacionamiento", "GASTOS VARIABLES"],
+      ["Movilidad Taxi", "GASTOS VARIABLES"],
+      ["Cuidado personal", "GASTOS VARIABLES"],
+      ["Regalos", "GASTOS VARIABLES"],
+      ["Mantenimiento Vehículo", "GASTOS VARIABLES"],
+    ] as const;
+
+    for (const [category, group] of nuevas) {
+      expect(isValidCategory(category)).toBe(true);
+      expect(getGroupForCategory(category)).toBe(group);
+    }
+  });
+
+  it("los grupos de las categorías originales no cambiaron", () => {
+    // Ampliar el catálogo no puede reclasificar lo que ya existía.
+    expect(getGroupForCategory("Transporte")).toBe("GASTOS VARIABLES");
+    expect(getGroupForCategory("Combustible")).toBe("GASTOS VARIABLES");
+    expect(getGroupForCategory("Suscripciones")).toBe("GASTOS FIJOS");
+    expect(getGroupForCategory("Servicios")).toBe("GASTOS FIJOS");
+    expect(getGroupForCategory("Educación")).toBe("GASTOS FIJOS");
+    expect(getGroupForCategory("Ingresos")).toBe("INGRESOS");
+    expect(getGroupForCategory("Otros")).toBe("GASTOS VARIABLES");
   });
 
   it("acepta solo valores del catálogo", () => {
@@ -114,11 +185,13 @@ describe("grupo → categorías", () => {
     expect(getCategoriesInGroup("INGRESOS")).toEqual(["Ingresos"]);
   });
 
-  it("GASTOS FIJOS son los tres acordados", () => {
+  it("GASTOS FIJOS son los cinco acordados", () => {
     expect(getCategoriesInGroup("GASTOS FIJOS")).toEqual([
       "Suscripciones",
       "Servicios",
       "Educación",
+      "Seguros",
+      "Impuestos y tributos",
     ]);
   });
 

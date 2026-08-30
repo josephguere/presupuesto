@@ -366,6 +366,61 @@ Para pararlo: ejecuta `removeTrigger`, o borra el activador desde ⏱.
 
 ---
 
+## 10.5. Recuperar correos antiguos (backfill)
+
+El trigger solo mira los ultimos dos dias. Para traer correos anteriores —los de
+un mes que ya paso, o los de los dias en que el script estuvo parado— el propio
+Apps Script trae dos funciones.
+
+**1.** En el editor, edita las dos constantes de arriba del archivo:
+
+```js
+var BACKFILL_FROM = '2026/08/01';   // inclusive
+var BACKFILL_TO   = '2026/08/29';   // inclusive
+```
+
+**2.** Ejecuta `previewBackfill`. No envia nada; solo cuenta:
+
+```
+2026/08/01: 2 hilos - 3 correos del BCP - 3 sin enviar todavia
+...
+TOTAL: 41 hilos - 96 correos del BCP - 88 sin enviar todavia
+```
+
+**3.** Ejecuta `backfillBcpEmails`.
+
+### Por que va dia a dia
+
+`GmailApp.search` devuelve como mucho 25 hilos, y siempre desde el principio de
+la busqueda. Con una sola consulta de un mes entero, todo lo que pasara de 25
+hilos quedaria fuera para siempre: repetir la ejecucion volveria a encontrar los
+mismos de arriba y no avanzaria. Troceando por dias, cada consulta es pequena y
+ese tope deja de importar.
+
+### No duplica nada
+
+Puedes ejecutarlo las veces que quieras sobre el mismo rango. Hay tres capas:
+
+1. El cache `SENT_MESSAGE_IDS` se salta lo ya enviado.
+2. La API responde `ALREADY_PROCESSED` si el correo ya estaba.
+3. `gmail_message_id UNIQUE` en PostgreSQL: la garantia final.
+
+### Si se corta por tiempo
+
+Apps Script mata las ejecuciones a los 6 minutos. El backfill para solo a los
+4,5 y te dice por donde seguir:
+
+```
+PARADA POR TIEMPO. Cambia BACKFILL_FROM a 2026/08/17 y vuelve a ejecutar.
+```
+
+Los IDs se guardan dia a dia, asi que nada se reenvia al retomar.
+
+> El rango esta limitado a 92 dias (`BACKFILL_MAX_DAYS`) para que un dedazo en el
+> ano no lance miles de busquedas contra Gmail.
+
+---
+
 ## 11. Desplegar en Vercel
 
 1. Sube el repositorio a GitHub.

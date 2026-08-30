@@ -13,6 +13,7 @@ import {
   getCurrentMonth,
   getTransactions,
   parseFilters,
+  withDefaultMonth,
 } from "@/lib/transactions";
 import { formatMonthLabel } from "@/lib/format";
 import { describeError } from "@/lib/logger";
@@ -41,11 +42,11 @@ export default async function ResumenPage(props: PageProps<"/">) {
   if (!(await hasValidSession())) redirect("/login");
 
   const searchParams = await props.searchParams;
-  const { filters, raw, mode } = parseFilters(searchParams);
+  const parsed = parseFilters(searchParams);
+  const { raw, mode } = parsed;
 
-  // Sin filtros de período, el mes en curso.
-  const effectiveFilters =
-    mode === "month" && !filters.month ? { ...filters, month: getCurrentMonth() } : filters;
+  // Sin filtros de período, el mes en curso. El mismo helper que Movimientos.
+  const effectiveFilters = withDefaultMonth(parsed);
 
   const periodLabel =
     mode === "range"

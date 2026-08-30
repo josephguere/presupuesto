@@ -14,6 +14,15 @@
  * El GRUPO no se guarda en la base de datos: se deriva de la categoría en el
  * momento de leer. Así nunca hay dos verdades que puedan discrepar, y cambiar la
  * categoría de un movimiento recalcula el grupo sin migración alguna.
+ *
+ * AÑADIR UNA CATEGORÍA ES AÑADIR UNA LÍNEA AQUÍ. No hay tabla de categorías, así
+ * que no hay migración, ni `seed`, ni riesgo de duplicados al repetirla: el
+ * catálogo es este objeto y los movimientos guardan su categoría como texto.
+ * Ampliar la lista no puede tocar ni un solo movimiento existente.
+ *
+ * El orden es el de los desplegables: primero los ingresos, luego los gastos
+ * fijos, y los variables agrupados por afinidad (transporte junto, salud junto)
+ * para que la lista se recorra con la vista.
  */
 
 /** Grupos de nivel superior. Los nombres son los que se ven en pantalla. */
@@ -33,18 +42,27 @@ const CATEGORY_TO_GROUP = {
   Suscripciones: "GASTOS FIJOS",
   Servicios: "GASTOS FIJOS",
   Educación: "GASTOS FIJOS",
+  Seguros: "GASTOS FIJOS",
+  "Impuestos y tributos": "GASTOS FIJOS",
 
   Supermercado: "GASTOS VARIABLES",
   Restaurantes: "GASTOS VARIABLES",
   Delivery: "GASTOS VARIABLES",
+  "Café y snacks": "GASTOS VARIABLES",
   Transporte: "GASTOS VARIABLES",
+  "Movilidad Taxi": "GASTOS VARIABLES",
+  "Peajes y estacionamiento": "GASTOS VARIABLES",
   Combustible: "GASTOS VARIABLES",
+  "Mantenimiento Vehículo": "GASTOS VARIABLES",
   Salud: "GASTOS VARIABLES",
   Farmacia: "GASTOS VARIABLES",
+  "Cuidado personal": "GASTOS VARIABLES",
   Entretenimiento: "GASTOS VARIABLES",
   Hogar: "GASTOS VARIABLES",
   Ropa: "GASTOS VARIABLES",
   Tecnología: "GASTOS VARIABLES",
+  "Compras online": "GASTOS VARIABLES",
+  Regalos: "GASTOS VARIABLES",
   Transferencias: "GASTOS VARIABLES",
   Otros: "GASTOS VARIABLES",
 } as const satisfies Record<string, Group>;

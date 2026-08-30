@@ -2,7 +2,8 @@
 
 import { useState, useTransition } from "react";
 import { createMovement, updateMovement } from "@/app/actions";
-import { CATEGORIES, NO_CATEGORY, NO_CATEGORY_LABEL, getGroupForCategory } from "@/lib/categories";
+import { NO_CATEGORY, getGroupForCategory } from "@/lib/categories";
+import { CategoryCombobox, FORM_CATEGORY_OPTIONS } from "./CategoryCombobox";
 import { DEFAULT_OPERATION_TYPE, OPERATION_TYPES } from "@/lib/operationTypes";
 import { toDateInputValue, toTimeInputValue } from "@/lib/format";
 import type { Transaction } from "@/types/transaction";
@@ -75,7 +76,7 @@ export function MovementForm({
   return (
     <form
       onSubmit={handleSubmit}
-      className="w-full max-w-lg rounded-xl border border-zinc-200 bg-white p-5 shadow-xl dark:border-zinc-800 dark:bg-zinc-900"
+      className="w-full max-w-lg rounded-xl border border-zinc-200 bg-white p-4 shadow-xl sm:p-5 dark:border-zinc-800 dark:bg-zinc-900"
     >
       <h2 className="text-lg font-semibold tracking-tight">
         {isEdit ? "Editar movimiento" : "Nuevo movimiento"}
@@ -87,7 +88,10 @@ export function MovementForm({
         </p>
       )}
 
-      <div className="mt-4 grid grid-cols-2 gap-3">
+      {/* `min-w-0` en las celdas: sin él, un desplegable con una opción larga
+          («Consumo Tarjeta de Débito») fija el ancho mínimo de la columna y el
+          formulario desborda la pantalla del móvil. */}
+      <div className="mt-4 grid grid-cols-2 gap-3 [&>*]:min-w-0">
         <Field label="Fecha" error={fieldErrors.date}>
           <input
             type="date"
@@ -121,19 +125,12 @@ export function MovementForm({
         </Field>
 
         <Field label="Categoría" error={fieldErrors.category}>
-          <select
+          <CategoryCombobox
             name="category"
-            value={category}
-            onChange={(event) => setCategory(event.target.value)}
-            className={inputClass}
-          >
-            <option value={NO_CATEGORY}>{NO_CATEGORY_LABEL}</option>
-            {CATEGORIES.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
+            options={FORM_CATEGORY_OPTIONS}
+            defaultValue={category}
+            onChange={setCategory}
+          />
         </Field>
 
         <Field label="Grupo" hint="lo decide la categoría">
@@ -168,14 +165,18 @@ export function MovementForm({
           </select>
         </Field>
 
-        <Field label="Tarjeta (4 dígitos)" error={fieldErrors.cardLast4}>
+        <Field label="Tarjeta" hint="opcional" error={fieldErrors.cardLast4}>
+          {/* Sin `required` y sin `pattern`: hay movimientos que no salen de
+              ninguna tarjeta —efectivo, Yape, transferencias, ingresos— y el
+              campo tiene que poder quedarse vacío. Si se escribe algo, tiene
+              que ser 4 dígitos, y de eso se encarga el esquema del servidor,
+              que es quien manda. */}
           <input
             type="text"
             name="cardLast4"
             inputMode="numeric"
-            pattern="\d{4}"
             maxLength={4}
-            placeholder="3400"
+            placeholder="Sin tarjeta"
             defaultValue={transaction?.cardLast4 ?? ""}
             className={inputClass}
           />
@@ -245,7 +246,7 @@ export function MovementForm({
 }
 
 const inputClass =
-  "w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 " +
+  "w-full min-w-0 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 " +
   "dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50";
 
 function Field({

@@ -1,4 +1,5 @@
 import { CATEGORIES, GROUPS, NO_CATEGORY_LABEL } from "@/lib/categories";
+import { CategoryCombobox, type CategoryOption } from "./CategoryCombobox";
 import { formatMonthLabel } from "@/lib/format";
 import { UNCATEGORIZED_FILTER } from "@/lib/transactions";
 
@@ -12,6 +13,15 @@ import { UNCATEGORIZED_FILTER } from "@/lib/transactions";
  * Período tiene dos modos EXCLUYENTES, y se ve cuál está activo: si hay fechas
  * en el rango personalizado, manda el rango y el selector de mes se atenúa. Sin
  * esa señal, el usuario no sabría por qué el mes elegido no surte efecto.
+ *
+ * La única pieza con JavaScript es el buscador de categorías, que con veintiséis
+ * opciones se agradece. Envía su valor en un input oculto, así que el formulario
+ * sigue siendo un GET normal y el enlace resultante sigue siendo compartible.
+ *
+ * `[&>*]:min-w-0` en las rejillas no es adorno: los hijos de un grid tienen
+ * `min-width: auto`, y un `<select>` mide lo que su opción más larga. Con
+ * «Peajes y estacionamiento» dentro, dos columnas se plantan en unos 470 px y
+ * desbordan cualquier móvil. Con `min-w-0` la columna puede encogerse.
  */
 export function FiltersBar({
   action,
@@ -34,11 +44,14 @@ export function FiltersBar({
     <form
       method="get"
       action={action}
-      className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900"
+      className="rounded-xl border border-zinc-200 bg-white p-3 sm:p-4 dark:border-zinc-800 dark:bg-zinc-900"
     >
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 [&>*]:min-w-0">
         <Field label="Mes" hint={isRange ? "ignorado: hay un rango" : undefined} dimmed={isRange}>
           <select name="mes" defaultValue={values.month ?? ""} className={inputClass}>
+            {/* Vacío = «todos». Al entrar sin filtros la página preselecciona el
+                mes en curso, así que llegar aquí con esta opción marcada
+                significa que la eligió el usuario. */}
             <option value="">Todos los meses</option>
             {months.map((month) => (
               <option key={month} value={month}>
@@ -49,15 +62,12 @@ export function FiltersBar({
         </Field>
 
         <Field label="Categoría">
-          <select name="categoria" defaultValue={values.category ?? ""} className={inputClass}>
-            <option value="">Todas</option>
-            <option value={UNCATEGORIZED_FILTER}>{NO_CATEGORY_LABEL}</option>
-            {CATEGORIES.map((category) => (
-              <option key={category} value={category}>
-                {category}
-              </option>
-            ))}
-          </select>
+          <CategoryCombobox
+            name="categoria"
+            options={FILTER_CATEGORY_OPTIONS}
+            defaultValue={values.category ?? ""}
+            ariaLabel="Filtrar por categoría"
+          />
         </Field>
 
         <Field label="Grupo">
@@ -91,7 +101,7 @@ export function FiltersBar({
 
       <fieldset className="mt-3 border-t border-zinc-200 pt-3 dark:border-zinc-800">
         <legend className="sr-only">Rango personalizado</legend>
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 [&>*]:min-w-0">
           <Field
             label="Desde"
             hint={isRange ? "rango activo" : "opcional: sustituye al mes"}
@@ -109,8 +119,15 @@ export function FiltersBar({
   );
 }
 
+/** Opciones del filtro: «Todas» primero, luego «Sin categoría» y el catálogo. */
+const FILTER_CATEGORY_OPTIONS: CategoryOption[] = [
+  { value: "", label: "Todas" },
+  { value: UNCATEGORIZED_FILTER, label: NO_CATEGORY_LABEL },
+  ...CATEGORIES.map((category) => ({ value: category, label: category })),
+];
+
 const inputClass =
-  "w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 " +
+  "w-full min-w-0 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 " +
   "dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50";
 
 function Field({

@@ -139,12 +139,24 @@ export function usesCustomRange(filters: {
  * Todo lo que no reconoce se descarta en silencio: una URL manipulada produce
  * como mucho una vista sin filtrar, nunca una consulta inválida.
  */
-export function parseFilters(params: Record<string, string | string[] | undefined>): {
+export interface ParsedFilters {
   filters: TransactionFilters;
   /** Los valores tal como deben repintarse en el formulario. */
   raw: { month?: string; from?: string; to?: string; category?: string; group?: string };
   mode: "month" | "range";
-} {
+  /**
+   * El usuario pidió explícitamente «Todos los meses».
+   *
+   * Hace falta distinguirlo de «no hay parámetro»: sin esta señal, elegir «todos»
+   * enviaría `?mes=` y la pantalla volvería a imponer el mes en curso, así que la
+   * opción no funcionaría nunca.
+   */
+  allMonths: boolean;
+}
+
+export function parseFilters(
+  params: Record<string, string | string[] | undefined>,
+): ParsedFilters {
   const one = (value: string | string[] | undefined) =>
     (Array.isArray(value) ? value[0] : value) || undefined;
 
@@ -181,7 +193,34 @@ export function parseFilters(params: Record<string, string | string[] | undefine
       group: groupParam,
     },
     mode,
+    // `mes=` vacío es la opción «Todos los meses» del desplegable. Un `mes`
+    // inválido no cuenta: se trata como si no viniera y se aplica el mes actual.
+    allMonths: firstValue(params.mes) === "",
   };
+}
+
+/** Primer valor de un parámetro repetido, sin convertir la cadena vacía. */
+function firstValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+/**
+ * Aplica el mes en curso cuando el usuario no ha pedido otra cosa.
+ *
+ * ES UNA DECISIÓN DE RENDIMIENTO, no de presentación: el mes acaba en el `WHERE`
+ * de la consulta, así que al entrar se leen las filas de un mes y no el
+ * histórico entero. Lo comparten Resumen y Movimientos para que ambas pantallas
+ * pidan exactamente lo mismo.
+ *
+ * Se respeta lo que el usuario elija: un rango personalizado manda, un mes
+ * concreto manda, y «Todos los meses» consulta todo a propósito.
+ */
+export function withDefaultMonth(parsed: ParsedFilters): TransactionFilters {
+  if (parsed.mode === "range") return parsed.filters;
+  if (parsed.filters.month) return parsed.filters;
+  if (parsed.allMonths) return parsed.filters;
+
+  return { ...parsed.filters, month: getCurrentMonth() };
 }
 
 /** Valor del filtro de categoría que representa «solo los que no tienen». */

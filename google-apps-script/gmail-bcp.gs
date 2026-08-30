@@ -25,6 +25,17 @@
  *   4. Ejecuta `testConnection` una vez y autoriza los permisos.
  *   5. Ejecuta `setup` una vez para crear el trigger de 1 minuto.
  *
+ * ---------------------------------------------------------------------------
+ * RECUPERAR CORREOS ANTIGUOS (backfill)
+ * ---------------------------------------------------------------------------
+ *
+ *   1. Edita BACKFILL_FROM y BACKFILL_TO, mas abajo.
+ *   2. Ejecuta `previewBackfill` para ver cuantos correos hay, sin enviar nada.
+ *   3. Ejecuta `backfillBcpEmails`.
+ *
+ * No duplica nada aunque lo repitas: lo ya ingerido se salta, y la base de
+ * datos rechaza cualquier correo repetido por su gmail_message_id.
+ *
  * Las claves van en Propiedades del script, NUNCA escritas en el código:
  * cualquiera con acceso al proyecto vería el fichero.
  */
@@ -39,10 +50,11 @@ var REQUIRED_PROPERTIES = ['API_URL', 'INGEST_KEY'];
  * asunto exacto de todos los correos del BCP. Se puede sobrescribir con la
  * propiedad opcional GMAIL_QUERY sin tocar el código.
  */
-var DEFAULT_GMAIL_QUERY =
+var BCP_SEARCH_BASE =
   'from:notificaciones@notificacionesbcp.com.pe ' +
-  '"Realizaste un consumo" ' +
-  'newer_than:2d';
+  '"Realizaste un consumo"';
+
+var DEFAULT_GMAIL_QUERY = BCP_SEARCH_BASE + ' newer_than:2d';
 
 /**
  * Etiqueta que se pone a los correos ya enviados.
@@ -70,6 +82,35 @@ var MAX_TRACKED_IDS = 300;
 var MAX_THREADS_PER_RUN = 25;
 
 /* ========================================================================== */
+/*  BACKFILL — recuperar correos antiguos                                     */
+/*                                                                            */
+/*  EDITA ESTAS DOS FECHAS y ejecuta `backfillBcpEmails`. Es lo único que hay */
+/*  que tocar; no hace falta cambiar ninguna Propiedad del script.            */
+/* ========================================================================== */
+
+/** Primer día a recuperar, inclusive. Formato AAAA/MM/DD. */
+var BACKFILL_FROM = '2026/08/01';
+
+/** Último día a recuperar, inclusive. */
+var BACKFILL_TO = '2026/08/29';
+
+/**
+ * Tope de días por seguridad.
+ *
+ * Evita que un dedazo en el año lance miles de búsquedas contra Gmail.
+ */
+var BACKFILL_MAX_DAYS = 92;
+
+/**
+ * Tiempo máximo antes de parar por su cuenta.
+ *
+ * Apps Script corta la ejecución a los 6 minutos y lo hace de golpe, sin dejar
+ * escribir el registro. Parando antes, el script alcanza a guardar lo enviado y
+ * a decirte por qué día seguir.
+ */
+var BACKFILL_TIME_BUDGET_MS = 4.5 * 60 * 1000;
+
+/* ========================================================================== */
 /*  Función principal — la que dispara el trigger                             */
 /* ========================================================================== */
 
@@ -91,46 +132,262 @@ function ingestBcpEmails() {
   var threads = GmailApp.search(config.gmailQuery, 0, MAX_THREADS_PER_RUN);
 
   if (threads.length === 0) {
-    Logger.log('Sin correos del BCP en la ventana de búsqueda.');
+    Logger.log('Sin correos del BCP en la ventana de busqueda.');
     return;
   }
 
-  var sentIds = loadSentIds_();
-  var alreadySent = {};
-  for (var i = 0; i < sentIds.length; i++) {
-    alreadySent[sentIds[i]] = true;
+  var state = newRunState_();
+  processThreads_(threads, config, label, state);
+  flushSentIds_(state);
+
+  Logger.log(describeRun_(state));
+}
+
+/* ========================================================================== */
+/*  Backfill - las funciones que ejecutas TU a mano                           */
+/* ========================================================================== */
+
+/**
+ * Reingesta los correos de un rango de fechas.
+ *
+ * POR QUE VA DIA A DIA. `GmailApp.search` devuelve como mucho los primeros
+ * MAX_THREADS_PER_RUN hilos, y siempre desde el principio. Con una sola
+ * busqueda de un mes entero, si hubiera mas hilos que ese tope los sobrantes no
+ * se alcanzarian nunca: repetir la ejecucion volveria a encontrar los mismos de
+ * arriba. Troceando por dias, cada busqueda es pequena y el tope deja de
+ * importar.
+ *
+ * NO DUPLICA NADA. Lo ya ingerido se salta por el cache de IDs, y si algo se
+ * reenvia la API responde ALREADY_PROCESSED: la garantia ultima es el indice
+ * unico sobre gmail_message_id en PostgreSQL. Puedes ejecutarlo las veces que
+ * quieras sobre el mismo rango.
+ */
+function backfillBcpEmails() {
+  var config = getConfig_();
+  var label = getOrCreateLabel_(config.processedLabel);
+  var days = buildBackfillDays_();
+
+  Logger.log('Backfill ' + BACKFILL_FROM + ' -> ' + BACKFILL_TO + ' (' + days.length + ' dias)');
+
+  var state = newRunState_();
+  var deadline = new Date().getTime() + BACKFILL_TIME_BUDGET_MS;
+  var pending = null;
+
+  for (var d = 0; d < days.length; d++) {
+    if (new Date().getTime() > deadline) {
+      pending = days[d];
+      break;
+    }
+
+    var day = days[d];
+    var threads = GmailApp.search(day.query, 0, MAX_THREADS_PER_RUN);
+
+    if (threads.length === 0) continue;
+
+    if (threads.length >= MAX_THREADS_PER_RUN) {
+      // Un solo dia con mas hilos que el tope: improbable, pero avisarlo es
+      // mejor que dejar un hueco silencioso en los datos.
+      Logger.log(
+        'AVISO ' + day.label + ': ' + threads.length + ' hilos, el maximo. ' +
+        'Puede quedar algo fuera de ese dia.'
+      );
+    }
+
+    processThreads_(threads, config, label, state);
+
+    // Se guarda dia a dia: si Apps Script corta la ejecucion, lo ya enviado
+    // queda anotado y la siguiente pasada no lo repite.
+    flushSentIds_(state);
+
+    Logger.log(day.label + ' -> ' + describeRun_(state));
   }
 
-  var sent = 0;
-  var skipped = 0;
-  var failed = 0;
+  Logger.log('----------------------------------------');
+  Logger.log('Backfill terminado. ' + describeRun_(state));
 
+  if (pending) {
+    Logger.log(
+      'PARADA POR TIEMPO. Cambia BACKFILL_FROM a ' + pending.label +
+      ' y vuelve a ejecutar backfillBcpEmails.'
+    );
+  }
+}
+
+/**
+ * Cuenta lo que encontraria el backfill, sin enviar nada.
+ *
+ * Ejecutala siempre antes: confirma que el rango es el que crees y que los
+ * correos casan con el filtro.
+ */
+function previewBackfill() {
+  getConfig_();
+  var days = buildBackfillDays_();
+
+  Logger.log('Backfill ' + BACKFILL_FROM + ' -> ' + BACKFILL_TO + ' (' + days.length + ' dias)');
+
+  var sentIds = loadSentIds_();
+  var alreadySent = {};
+  for (var i = 0; i < sentIds.length; i++) alreadySent[sentIds[i]] = true;
+
+  var totalHilos = 0;
+  var totalCasan = 0;
+  var totalNuevos = 0;
+
+  for (var d = 0; d < days.length; d++) {
+    var day = days[d];
+    var threads = GmailApp.search(day.query, 0, MAX_THREADS_PER_RUN);
+    if (threads.length === 0) continue;
+
+    var casan = 0;
+    var nuevos = 0;
+
+    for (var t = 0; t < threads.length; t++) {
+      var messages = threads[t].getMessages();
+      for (var m = 0; m < messages.length; m++) {
+        if (!looksLikeBcpConsumption_(messages[m])) continue;
+        casan++;
+        if (!alreadySent[messages[m].getId()]) nuevos++;
+      }
+    }
+
+    totalHilos += threads.length;
+    totalCasan += casan;
+    totalNuevos += nuevos;
+
+    Logger.log(
+      day.label + ': ' + threads.length + ' hilos - ' + casan + ' correos del BCP - ' +
+      nuevos + ' sin enviar todavia'
+    );
+  }
+
+  Logger.log('----------------------------------------');
+  Logger.log(
+    'TOTAL: ' + totalHilos + ' hilos - ' + totalCasan + ' correos del BCP - ' +
+    totalNuevos + ' sin enviar todavia'
+  );
+  Logger.log('No se ha enviado nada. Ejecuta backfillBcpEmails para hacerlo.');
+}
+
+/**
+ * Convierte BACKFILL_FROM/TO en una busqueda por dia.
+ *
+ * Gmail trata `after:` como inclusivo y `before:` como exclusivo, asi que cada
+ * dia se pide como [dia, dia+1).
+ */
+function buildBackfillDays_() {
+  var from = parseBackfillDate_(BACKFILL_FROM);
+  var to = parseBackfillDate_(BACKFILL_TO);
+
+  if (!from) throw new Error('BACKFILL_FROM no es una fecha AAAA/MM/DD valida: ' + BACKFILL_FROM);
+  if (!to) throw new Error('BACKFILL_TO no es una fecha AAAA/MM/DD valida: ' + BACKFILL_TO);
+
+  if (from.getTime() > to.getTime()) {
+    throw new Error(
+      'BACKFILL_FROM (' + BACKFILL_FROM + ') es posterior a BACKFILL_TO (' + BACKFILL_TO + ').'
+    );
+  }
+
+  var days = [];
+  var cursor = new Date(from.getTime());
+
+  while (cursor.getTime() <= to.getTime()) {
+    var next = new Date(cursor.getTime());
+    next.setDate(next.getDate() + 1);
+
+    days.push({
+      label: formatBackfillDate_(cursor),
+      query: BCP_SEARCH_BASE +
+        ' after:' + formatBackfillDate_(cursor) +
+        ' before:' + formatBackfillDate_(next)
+    });
+
+    if (days.length > BACKFILL_MAX_DAYS) {
+      throw new Error(
+        'El rango supera ' + BACKFILL_MAX_DAYS + ' dias. Hazlo por tramos, ' +
+        'o sube BACKFILL_MAX_DAYS si de verdad lo necesitas.'
+      );
+    }
+
+    cursor = next;
+  }
+
+  return days;
+}
+
+/** 'AAAA/MM/DD' a Date local. Devuelve null si la fecha no existe. */
+function parseBackfillDate_(text) {
+  var match = /^(\d{4})\/(\d{1,2})\/(\d{1,2})$/.exec(String(text).trim());
+  if (!match) return null;
+
+  var year = Number(match[1]);
+  var month = Number(match[2]);
+  var day = Number(match[3]);
+  var date = new Date(year, month - 1, day);
+
+  // JavaScript desborda en silencio: el 31 de febrero se convierte en 3 de marzo.
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return null;
+  }
+
+  return date;
+}
+
+function formatBackfillDate_(date) {
+  return date.getFullYear() + '/' + pad2_(date.getMonth() + 1) + '/' + pad2_(date.getDate());
+}
+
+function pad2_(value) {
+  return (value < 10 ? '0' : '') + value;
+}
+
+/* ========================================================================== */
+/*  Motor compartido por la ingesta y el backfill                             */
+/* ========================================================================== */
+
+/** Estado acumulado de una ejecucion. */
+function newRunState_() {
+  var sentIds = loadSentIds_();
+  var alreadySent = {};
+  for (var i = 0; i < sentIds.length; i++) alreadySent[sentIds[i]] = true;
+
+  return { sentIds: sentIds, alreadySent: alreadySent, pending: 0, sent: 0, skipped: 0, failed: 0 };
+}
+
+/**
+ * Recorre los hilos y envia lo que falte.
+ *
+ * Lo usan tanto el trigger como el backfill. Si la logica de deduplicado o de
+ * etiquetado viviera duplicada, un dia divergirian y solo se notaria por datos
+ * que faltan.
+ */
+function processThreads_(threads, config, label, state) {
   for (var t = 0; t < threads.length; t++) {
     var thread = threads[t];
     var messages = thread.getMessages();
 
-    // Por HILO, no global: que falle un hilo no debe impedir marcar los demás.
+    // Por HILO, no global: que falle un hilo no debe impedir marcar los demas.
     var threadFailed = 0;
 
     for (var m = 0; m < messages.length; m++) {
       var message = messages[m];
       var messageId = message.getId();
 
-      if (alreadySent[messageId]) {
-        skipped++;
+      if (state.alreadySent[messageId]) {
+        state.skipped++;
         continue;
       }
 
-      // Un hilo puede mezclar correos que casan con la búsqueda y otros que no.
+      // Un hilo puede mezclar correos que casan con la busqueda y otros que no.
       if (!looksLikeBcpConsumption_(message)) continue;
 
       if (sendMessage_(message, thread, config)) {
-        sent++;
-        alreadySent[messageId] = true;
-        sentIds.push(messageId);
+        state.sent++;
+        state.pending++;
+        state.alreadySent[messageId] = true;
+        state.sentIds.push(messageId);
       } else {
         threadFailed++;
-        failed++;
+        state.failed++;
       }
     }
 
@@ -138,11 +395,19 @@ function ingestBcpEmails() {
       thread.addLabel(label);
     }
   }
+}
 
-  // Una sola escritura por ejecución en lugar de una por mensaje.
-  if (sent > 0) saveSentIds_(sentIds);
+/** Escribe los IDs acumulados. Una sola escritura, y solo si hay algo nuevo. */
+function flushSentIds_(state) {
+  if (state.pending === 0) return;
+  saveSentIds_(state.sentIds);
+  state.pending = 0;
+}
 
-  Logger.log('Enviados: ' + sent + ' · Ya enviados antes: ' + skipped + ' · Fallidos: ' + failed);
+function describeRun_(state) {
+  return 'Enviados: ' + state.sent +
+    ' - Ya enviados antes: ' + state.skipped +
+    ' - Fallidos: ' + state.failed;
 }
 
 /** Lee los Message ID ya enviados. Ante cualquier problema, empieza de cero. */

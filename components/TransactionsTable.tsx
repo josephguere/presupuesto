@@ -81,7 +81,7 @@ export function TransactionsTable({
         {transactions.map((transaction) => (
           <li
             key={transaction.id}
-            className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900"
+            className="rounded-xl border border-zinc-200 bg-white p-3 sm:p-4 dark:border-zinc-800 dark:bg-zinc-900"
           >
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">

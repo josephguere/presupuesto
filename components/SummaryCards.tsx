@@ -10,11 +10,14 @@ import type { Summary } from "@/types/transaction";
  *   2. Las métricas de gasto que ya existían, más lo pendiente de categorizar.
  *
  * Todos responden a los filtros activos y todos van en soles.
+ *
+ * `min-w-0` en las celdas para que una etiqueta larga —«Pendiente de
+ * categorizar»— pueda encogerse en vez de estirar la columna y desbordar.
  */
 export function SummaryCards({ summary }: { summary: Summary }) {
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-5 [&>*]:min-w-0">
         <Card label="Ingresos" value={summary.ingresos} tone="positive" />
         <Card label="Gastos fijos" value={summary.gastosFijos} />
         <Card label="Gastos variables" value={summary.gastosVariables} />
@@ -27,7 +30,7 @@ export function SummaryCards({ summary }: { summary: Summary }) {
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-5 [&>*]:min-w-0">
         <Card label="Gastado" value={summary.totalSpent} muted />
         <Card label="Movimientos" value={summary.transactionCount} muted raw />
         <Card label="Promedio" value={summary.averageAmount} muted />
