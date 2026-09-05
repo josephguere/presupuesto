@@ -53,6 +53,7 @@ presupuesto/
 │   ├── eliminados/page.tsx            Papelera: bajas lógicas y restaurar
 │   ├── login/page.tsx                 Pantalla de acceso por PIN
 │   ├── actions.ts                     Crear, editar, eliminar, restaurar
+│   ├── api/ai/chat/route.ts           Chat: pregunta → intención → datos
 │   ├── api/auth/login/route.ts        Canjea el PIN por una sesión
 │   └── api/auth/logout/route.ts       Borra la cookie
 │   └── api/ingest/bcp/
@@ -68,11 +69,37 @@ presupuesto/
 │   ├── DeleteMovementButton.tsx       Baja lógica, con confirmación
 │   ├── RestoreMovementButton.tsx      Restaurar, con confirmación
 │   ├── AppHeader.tsx                  Navegación y cerrar sesión
+│   ├── chat/
+│   │   ├── ChatLauncher.tsx           Botón flotante y estado del chat
+│   │   ├── ChatPanel.tsx              Carcasa: cabecera, lista, compositor
+│   │   ├── ChatMessageList.tsx        Scroll y región viva
+│   │   ├── ChatMessage.tsx            Burbuja y tabla de resultados
+│   │   ├── ChatComposer.tsx           Cuadro de escribir
+│   │   └── ChatBoundary.tsx           Aísla un fallo del chat de la página
 │   ├── PinForm.tsx                    Las 4 casillas del PIN
 │   ├── TransactionsTable.tsx          Tarjetas en móvil, tabla en escritorio
 │   └── SetupNotice.tsx                Aviso si falta configuración
 ├── lib/
 │   ├── format.ts                      Intl es-PE / America/Lima
+│   ├── period.ts                      Períodos en hora de Lima (puro)
+│   ├── ai/                            Chat: SOLO servidor
+│   │   ├── limits.ts                  Números y textos visibles
+│   │   ├── config.ts                  ¿Hay clave de Gemini?
+│   │   ├── catalog.ts                 Catálogo vigente desde Supabase
+│   │   ├── intent.ts                  Esquema y validación de la intención
+│   │   ├── execute.ts                 Las 12 intenciones → consultas
+│   │   ├── result.ts                  Qué puede salir, y qué no
+│   │   ├── present.ts                 Cadenas al modelo, números al navegador
+│   │   ├── prompts.ts                 Los dos prompts
+│   │   ├── gemini.ts                  Las dos llamadas al SDK
+│   │   ├── answer.ts                  Red anti-cifras inventadas
+│   │   ├── deadline.ts                Presupuesto de tiempo
+│   │   ├── errors.ts                  Toda la cadena de errores
+│   │   └── rateLimit.ts               Límite por minuto y por día
+│   ├── chat/                          Chat: lo que toca el navegador
+│   │   ├── types.ts                   Contrato servidor ↔ interfaz
+│   │   ├── state.ts                   Reducer de la conversación
+│   │   └── client.ts                  Transporte a /api/ai/chat
 │   ├── categories.ts                  Catálogo: categoría → resumen → grupo
 │   ├── totals.ts                      Agregación de la tabla dinámica
 │   ├── movementSort.ts                Orden de la lista de movimientos
@@ -452,7 +479,7 @@ entornos *Production*, *Preview* y *Development*:
 | `GMAIL_INGEST_KEY` | La misma clave que en Apps Script |
 | `AUTH_PIN_HASH` | Lo que imprime `npm run auth:hash` |
 | `AUTH_SESSION_SECRET` | 64 caracteres hexadecimales aleatorios |
-| `GEMINI_API_KEY` | Opcional. De <https://aistudio.google.com/apikey> |
+| `GEMINI_API_KEY` | Opcional. De <https://aistudio.google.com/apikey>. Sin ella no hay sugerencia de categoría por IA **ni chat** |
 
 Las dos de `AUTH_` van marcadas como **Sensitive** si Vercel lo ofrece: así el
 valor deja de poder leerse desde el panel una vez guardado.
@@ -955,6 +982,166 @@ sugerencia» y eliges a mano. Nunca bloquea la edición.
 
 > El modelo por defecto es `gemini-3.5-flash-lite`. El `2.5-flash-lite` ya no se
 > sirve a claves nuevas. Se puede cambiar con `GEMINI_MODEL` sin desplegar.
+
+---
+
+## Chat: consultar tus datos
+
+Un botón flotante abajo a la derecha, **Consultar mis datos**, abre un chat que
+responde preguntas sobre tus movimientos:
+
+```
+¿Cuánto gasté este mes?
+¿Cuál fue mi categoría con mayor gasto?
+¿Cuánto gasté en FIBERPRO?
+Compara mis gastos de agosto y septiembre
+Mis cinco movimientos más altos
+¿Y el mes anterior?
+```
+
+Lo que no trate de tu presupuesto se rechaza con una sola frase, siempre la
+misma. No hay forma de sacarle un poema ni la capital de Francia.
+
+### Gemini nunca toca la base de datos
+
+Es lo que sostiene todo lo demás, así que conviene verlo entero:
+
+```
+Tu pregunta
+     ↓
+La API valida la SESIÓN                     ← sin cookie no se pasa de aquí
+     ↓
+Cuenta el mensaje en el LÍMITE de consumo   ← antes de gastar cuota
+     ↓
+Lee el CATÁLOGO vigente de Supabase         ← qué categorías existen hoy
+     ↓
+Gemini devuelve una INTENCIÓN estructurada  ← doce nombres y unos filtros
+     ↓
+El servidor la VALIDA                       ← aquí muere lo imposible
+     ↓
+El servidor CONSULTA Supabase               ← con la capa de solo lectura
+     ↓
+Gemini REDACTA con esos resultados          ← y solo con ellos
+     ↓
+Se comprueba que no inventó ninguna cifra
+     ↓
+Respuesta
+```
+
+**Gemini no genera SQL, no nombra tablas ni columnas y no puede escribir.** Su
+primera respuesta está encerrada en un esquema que solo admite una de estas doce
+intenciones:
+
+```
+total_expenses       total_income          balance          transaction_count
+transaction_list     highest_transactions  category_total   category_breakdown
+group_total          group_breakdown       merchant_total   period_comparison
+```
+
+y unos filtros cuyos valores salen de un `enum` con tu catálogo real. El
+servidor traduce eso a `getTransactions`, la misma función de solo lectura que
+alimenta la pantalla de Movimientos. Por eso el chat hereda gratis tres cosas:
+**no ve los movimientos eliminados**, respeta el corte entre datos de prueba y
+reales, y no tiene por dónde escribir.
+
+Lo peor que puede conseguir una inyección —en tu pregunta o en el nombre de un
+comercio que venga de un correo— es que se ejecute **otra de las doce consultas
+de solo lectura sobre tus propios datos**. Verías un total real que no era el
+que pedías.
+
+### Qué sale y qué no
+
+| Sale | No sale |
+|---|---|
+| Fecha, comercio, monto | Número de tarjeta |
+| Categoría, resumen, grupo | Número de operación |
+| Totales y recuentos ya calculados | Comentario completo del movimiento |
+| El período aplicado | Identificadores internos, cuerpo del correo |
+
+No es una promesa: los campos prohibidos **no existen en los tipos** que viajan
+hacia el modelo ni hacia el navegador, y hay una prueba que revisa el JSON
+completo del resultado buscándolos.
+
+### Las cuentas las hace el servidor
+
+Al modelo se le mandan los importes **ya escritos** (`S/ 1,286.20`), nunca
+números sueltos. Si no recibe números, no puede sumarlos mal. Los totales, los
+porcentajes y las comparaciones entre períodos se calculan en TypeScript antes
+de llamarlo.
+
+Y después se comprueba: si en su respuesta aparece una cifra que no estaba en
+los datos que se le dieron, **se descarta su texto** y responde el servidor con
+una frase construida a partir de los mismos hechos. Esa frase de respaldo hace
+falta igual para cuando Gemini tarda de más o falla, así que verificar sale casi
+gratis.
+
+### Fechas
+
+Entiende `hoy`, `ayer`, `esta semana`, `este mes`, `mes anterior`, `agosto`,
+`septiembre de 2026`, `últimos 30 días` y rangos explícitos. Todo en
+`America/Lima`, y **las fechas las calcula el servidor**: el modelo solo elige
+la etiqueta. Pedirle que calcule «el mes pasado» sería confiarle saber qué día
+es hoy y la aritmética de meses de 28, 30 y 31 días.
+
+El mes en curso se corta **hoy**, no el día 30, y la respuesta lo dice:
+«septiembre de 2026 (mes en curso, hasta el día 5)».
+
+### El catálogo se lee de Supabase
+
+Las categorías que el chat acepta salen de una consulta a tus movimientos
+(`catalogo_categorias`), unidas con la jerarquía de `lib/categories.ts`, que es
+el único sitio donde existe la relación categoría → resumen → grupo.
+
+Es híbrido porque tiene que serlo: **no hay tabla de categorías**. Qué
+categorías existen es un dato y se consulta; a qué grupo pertenecen no lo es y
+se deriva del catálogo. La consecuencia práctica es que una categoría nueva
+queda disponible sola por los dos caminos: si aparece en los datos, entra (sin
+grupo, y el chat lo dice); si se añade a `lib/categories.ts`, entra con su grupo.
+
+Además el emparejamiento perdona tildes, mayúsculas, plurales y una errata:
+`delivery`, `Delivery` y `Supermercdo` encuentran lo que toca. Si un término
+encaja con **varias** categorías no elige ninguna: pregunta cuál.
+
+### Límites y errores
+
+| | |
+|---|---|
+| Pregunta | entre 2 y 500 caracteres |
+| Mensajes | 8 por minuto, 150 por día |
+| Historial | 12 turnos en pantalla, 6 al modelo |
+| Filas | 25 al modelo, 20 en la tabla |
+| Tiempo | 10 s por llamada, 24 s la petición entera |
+
+El límite se cuenta **en PostgreSQL**, no en memoria: Vercel es serverless y un
+contador en una variable no se comparte entre instancias. Y **falla cerrado**:
+si el contador no responde, no se llama a Gemini.
+
+Si algo va mal el chat lo dice y la aplicación sigue funcionando. Un fallo de
+render suyo tampoco se lleva la página por delante: está envuelto en un límite
+de error que lo apaga y deja el resto intacto.
+
+### El historial no se guarda
+
+Vive en el estado del navegador y en ningún sitio más. **No se guarda en
+Supabase ni en `localStorage`**: se borra al pulsar «Limpiar», al recargar y al
+cerrar sesión. Cerrar el panel sí lo conserva, para poder volver.
+
+Al modelo no se le reenvía el texto que él mismo escribió, sino una línea corta
+del servidor (`total_expenses · agosto de 2026`). Es lo que hace que «¿y el mes
+anterior?» funcione sin que el nombre de un comercio vuelva a entrar en el
+siguiente prompt.
+
+### Sin clave, no aparece
+
+Sin `GEMINI_API_KEY` el botón flotante **no se pinta**. Aquí no se degrada como
+en la sugerencia de categoría —que sigue funcionando con tu historial— porque no
+hay nada a lo que degradar: sin modelo no se puede entender una pregunta escrita
+en castellano.
+
+> **Al desplegar esto hay que ejecutar `npm run db:init`.** Añade la tabla
+> `rate_limits` y las funciones `register_rate_hit` y `catalogo_categorias`. El
+> script es idempotente y no toca ningún dato. Sin ellas el chat responde error
+> a todo, porque el límite falla cerrado.
 
 ---
 

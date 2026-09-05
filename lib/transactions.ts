@@ -39,8 +39,14 @@ import {
  * convierte en una vista de PostgreSQL sin tocar la interfaz.
  */
 
-/** Tope de filas por consulta: red de seguridad, no paginación. */
-const MAX_ROWS = 1000;
+/**
+ * Tope de filas por consulta: red de seguridad, no paginación.
+ *
+ * Se exporta para que quien lea pueda DARSE CUENTA de que topó. Un total
+ * calculado sobre mil filas cuando hay mil doscientas es un número falso con
+ * aspecto de número bueno, y el chat necesita poder avisarlo.
+ */
+export const MAX_ROWS = 1000;
 
 const COLUMNS =
   "id, bank, operation_type, transaction_at, amount, currency, merchant, " +
@@ -59,13 +65,18 @@ export type TransactionStatus = "activos" | "eliminados";
 /* Fechas                                                                      */
 /* -------------------------------------------------------------------------- */
 
-/** Mes `YYYY-MM` actual **en Lima**, no en la zona del servidor. */
-export function getCurrentMonth(): string {
+/**
+ * Mes `YYYY-MM` actual **en Lima**, no en la zona del servidor.
+ *
+ * El instante se puede inyectar para poder probar el cambio de mes sin tocar el
+ * reloj del proceso. Ningún llamador de la aplicación lo pasa.
+ */
+export function getCurrentMonth(now: Date = new Date()): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: LIMA_TIME_ZONE,
     year: "numeric",
     month: "2-digit",
-  }).format(new Date());
+  }).format(now);
 }
 
 /** `YYYY-MM` con formato válido. */
@@ -287,8 +298,17 @@ function toTransaction(row: TransactionRow): Transaction {
   };
 }
 
-/** Movimientos que cumplen los filtros, del más reciente al más antiguo. */
-export async function getTransactions(filters: TransactionFilters = {}): Promise<Transaction[]> {
+/**
+ * Movimientos que cumplen los filtros, del más reciente al más antiguo.
+ *
+ * `options.signal` corta la consulta si quien la pidió ya se fue. Lo usa el chat,
+ * que tiene un presupuesto de tiempo para toda la petición: sin esto, una
+ * consulta lenta seguiría ocupando la conexión después de haber respondido.
+ */
+export async function getTransactions(
+  filters: TransactionFilters = {},
+  options: { signal?: AbortSignal } = {},
+): Promise<Transaction[]> {
   // El orden va en la CONSULTA, no sobre el array ya leído: así se ordenan
   // todos los movimientos que cumplen los filtros y no solo los que hubiera
   // cargados, que es lo que importaría el día que haya paginación.
@@ -344,6 +364,8 @@ export async function getTransactions(filters: TransactionFilters = {}): Promise
 
   // En producción el dashboard solo enseña movimientos reales; en local, todos.
   if (!shouldShowTestData()) query = query.eq("is_test", false);
+
+  if (options.signal) query = query.abortSignal(options.signal);
 
   const { data, error } = await query.returns<TransactionRow[]>();
   if (error) throw new Error(`No se pudieron leer los movimientos: ${error.message}`);
