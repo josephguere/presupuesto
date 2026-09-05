@@ -370,3 +370,111 @@ create trigger set_updated_at
 -- ---------------------------------------------------------------------------
 alter table public.email_ingestions enable row level security;
 alter table public.transactions     enable row level security;
+
+-- ---------------------------------------------------------------------------
+--  6. Chat de consulta — control de consumo
+--
+--  El chat llama a Gemini DOS veces por mensaje (intención y redacción), así que
+--  una ráfaga de mensajes se traduce en el doble de peticiones contra una cuota
+--  que se agota. Esto lo frena.
+--
+--  Por qué en PostgreSQL y no en memoria del proceso: Vercel es serverless. Un
+--  contador en una variable de módulo no se comparte entre instancias ni
+--  sobrevive a un arranque en frío, así que abrir dos pestañas bastaría para
+--  duplicar el límite. La tabla ya está ahí y el patrón es el mismo que el de
+--  `auth_attempts`.
+--
+--  La tabla NUNCA contiene la pregunta del usuario ni ningún texto suyo: solo un
+--  identificador de ventana, un contador y una marca de tiempo.
+-- ---------------------------------------------------------------------------
+create table if not exists public.rate_limits (
+  id                text primary key,
+  hits              integer not null default 0,
+  window_started_at timestamptz not null default now(),
+  updated_at        timestamptz not null default now()
+);
+
+comment on table public.rate_limits is
+  'Contadores por ventana para limitar el consumo del chat. Nunca contiene texto del usuario.';
+
+alter table public.rate_limits enable row level security;
+
+-- Ventana fija: al primer mensaje de la ventana se anota `window_started_at`, y
+-- los siguientes suman hasta que vence.
+--
+-- Sumar y decidir ocurren en la MISMA sentencia. Hacerlo en dos pasos desde la
+-- aplicación permitiría lanzar veinte peticiones a la vez y que todas leyeran el
+-- mismo contador; `insert ... on conflict do update ... returning` bloquea la
+-- fila y las serializa, igual que en `register_auth_attempt`.
+create or replace function public.register_rate_hit(
+  p_id             text,
+  p_limit          integer,
+  p_window_seconds integer
+)
+returns table (hits integer, allowed boolean, retry_after_seconds integer)
+language plpgsql
+as $$
+declare
+  v_hits  integer;
+  v_start timestamptz;
+begin
+  insert into public.rate_limits as r (id, hits, window_started_at, updated_at)
+       values (p_id, 1, now(), now())
+  on conflict (id) do update
+       set hits = case
+             when r.window_started_at + make_interval(secs => p_window_seconds) <= now()
+             then 1
+             else r.hits + 1
+           end,
+           window_started_at = case
+             when r.window_started_at + make_interval(secs => p_window_seconds) <= now()
+             then now()
+             else r.window_started_at
+           end,
+           updated_at = now()
+    returning r.hits, r.window_started_at into v_hits, v_start;
+
+  return query
+    select
+      v_hits,
+      v_hits <= p_limit,
+      greatest(
+        0,
+        ceil(extract(epoch from (v_start + make_interval(secs => p_window_seconds) - now())))
+      )::integer;
+end;
+$$;
+
+-- ---------------------------------------------------------------------------
+--  7. Chat de consulta — catálogo vigente de categorías
+--
+--  El chat necesita saber qué categorías EXISTEN de verdad para validar lo que
+--  el usuario menciona, y tienen que aparecer solas cuando se añade una.
+--
+--  Aquí no hay tabla de categorías: la jerarquía vive en `lib/categories.ts` y
+--  `transactions.category` es una columna de texto. Esta función devuelve el
+--  lado que sí es dato —qué categorías se están usando y cuánto—, y la
+--  aplicación le une la jerarquía. Ver la cabecera de `lib/ai/catalog.ts`.
+--
+--  Es una función y no un `select` desde la aplicación porque PostgREST no tiene
+--  DISTINCT: habría que traerse las filas y deduplicar en memoria, y con el tope
+--  de mil filas una categoría poco usada desaparecería del catálogo sin aviso.
+--
+--  `stable` y de solo lectura: no escribe nada.
+-- ---------------------------------------------------------------------------
+create or replace function public.catalogo_categorias(
+  p_incluir_prueba boolean default false
+)
+returns table (categoria text, movimientos bigint)
+language sql
+stable
+as $$
+  select t.category, count(*)
+    from public.transactions t
+   where t.activo
+     and t.category is not null
+     and btrim(t.category) <> ''
+     and (p_incluir_prueba or not t.is_test)
+   group by t.category
+   order by count(*) desc, t.category;
+$$;

@@ -72,7 +72,13 @@ export function formatTransactionTime(iso: string | null): string {
   return Number.isNaN(date.getTime()) ? "" : timeFormatter.format(date);
 }
 
-const MONTH_NAMES = [
+/**
+ * Los doce meses en castellano.
+ *
+ * Se exporta para que `lib/period.ts` etiquete sus períodos con estos mismos
+ * nombres. Duplicarlos allí crearía una segunda lista que puede discrepar.
+ */
+export const MONTH_NAMES = [
   "Enero",
   "Febrero",
   "Marzo",
