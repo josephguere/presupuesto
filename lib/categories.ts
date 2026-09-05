@@ -1,28 +1,29 @@
 /**
- * Catálogo de categorías y su grupo.
+ * Catálogo de clasificación: categoría, categoría resumen y grupo.
  *
- * FUENTE ÚNICA DE VERDAD. Ningún componente declara su propia lista: todos
- * importan de aquí.
+ * FUENTE ÚNICA DE VERDAD. Ningún componente declara su propia lista ni su propio
+ * mapeo: todos importan de aquí.
  *
- * Por qué en TypeScript y no en una tabla de Supabase: son dieciocho valores que
- * casi nunca cambian y el grupo es una función pura de la categoría. Una tabla
- * añadiría un JOIN a cada consulta, una pantalla de mantenimiento y la
- * posibilidad de que el grupo guardado se desincronice del catálogo. El día que
- * las categorías necesiten color, presupuesto mensual o jerarquía propia, se
- * normaliza.
+ * La jerarquía es de tres niveles:
  *
- * El GRUPO no se guarda en la base de datos: se deriva de la categoría en el
- * momento de leer. Así nunca hay dos verdades que puedan discrepar, y cambiar la
- * categoría de un movimiento recalcula el grupo sin migración alguna.
+ *     GRUPO  →  CATEGORÍA RESUMEN  →  CATEGORÍA  →  movimiento
+ *
+ * y se declara ENCADENADA, no por duplicado. Cada categoría dice a qué resumen
+ * pertenece, y cada resumen dice a qué grupo. El grupo de una categoría se
+ * deduce recorriendo la cadena.
+ *
+ * Es lo que hace IMPOSIBLE la incoherencia que sí permitiría declarar los dos
+ * mapeos por separado: que «Luz» apuntara a «Servicios del hogar» y a la vez a
+ * GASTOS VARIABLES mientras el resto de ese resumen fuera GASTOS FIJOS. Aquí no
+ * hay dónde escribir esa contradicción.
+ *
+ * Solo la CATEGORÍA la elige el usuario. Las otras dos se calculan, y por eso no
+ * se guardan en la base de datos: se derivan al leer. Así no hay dos verdades
+ * que puedan discrepar, y reagrupar categorías mañana no exige migración ni
+ * tocar un solo movimiento.
  *
  * AÑADIR UNA CATEGORÍA ES AÑADIR UNA LÍNEA AQUÍ. No hay tabla de categorías, así
- * que no hay migración, ni `seed`, ni riesgo de duplicados al repetirla: el
- * catálogo es este objeto y los movimientos guardan su categoría como texto.
- * Ampliar la lista no puede tocar ni un solo movimiento existente.
- *
- * El orden es el de los desplegables: primero los ingresos, luego los gastos
- * fijos, y los variables agrupados por afinidad (transporte junto, salud junto)
- * para que la lista se recorra con la vista.
+ * que no hay migración, ni `seed`, ni riesgo de duplicados al repetirla.
  */
 
 /** Grupos de nivel superior. Los nombres son los que se ven en pantalla. */
@@ -31,46 +32,95 @@ export const GROUPS = ["INGRESOS", "GASTOS FIJOS", "GASTOS VARIABLES"] as const;
 export type Group = (typeof GROUPS)[number];
 
 /**
- * Categorías y su grupo.
+ * Categoría resumen → grupo.
  *
- * El orden importa: es el que se ve en los desplegables. «Ingresos» va primero
- * por ser el único que suma en vez de restar.
+ * El orden es el de los desplegables y el de la tabla dinámica del resumen:
+ * primero lo que suma, luego lo que se paga todos los meses y al final lo que
+ * varía.
  */
-const CATEGORY_TO_GROUP = {
+const SUMMARY_TO_GROUP = {
   Ingresos: "INGRESOS",
 
   Suscripciones: "GASTOS FIJOS",
-  Servicios: "GASTOS FIJOS",
+  "Servicios del hogar": "GASTOS FIJOS",
   Educación: "GASTOS FIJOS",
-  Seguros: "GASTOS FIJOS",
-  "Impuestos y tributos": "GASTOS FIJOS",
+  "Seguros e impuestos": "GASTOS FIJOS",
 
-  Supermercado: "GASTOS VARIABLES",
-  Restaurantes: "GASTOS VARIABLES",
-  Delivery: "GASTOS VARIABLES",
-  "Café y snacks": "GASTOS VARIABLES",
-  Transporte: "GASTOS VARIABLES",
-  "Movilidad Taxi": "GASTOS VARIABLES",
-  "Peajes y estacionamiento": "GASTOS VARIABLES",
-  Combustible: "GASTOS VARIABLES",
-  "Mantenimiento Vehículo": "GASTOS VARIABLES",
-  Salud: "GASTOS VARIABLES",
-  Farmacia: "GASTOS VARIABLES",
-  "Cuidado personal": "GASTOS VARIABLES",
+  Alimentación: "GASTOS VARIABLES",
+  Movilidad: "GASTOS VARIABLES",
+  Vehículo: "GASTOS VARIABLES",
+  "Salud y bienestar": "GASTOS VARIABLES",
   Entretenimiento: "GASTOS VARIABLES",
   Hogar: "GASTOS VARIABLES",
-  Ropa: "GASTOS VARIABLES",
-  Tecnología: "GASTOS VARIABLES",
-  "Compras online": "GASTOS VARIABLES",
+  "Compras personales": "GASTOS VARIABLES",
+  "Tecnología y compras": "GASTOS VARIABLES",
   Regalos: "GASTOS VARIABLES",
   Transferencias: "GASTOS VARIABLES",
   Otros: "GASTOS VARIABLES",
 } as const satisfies Record<string, Group>;
 
-export type Category = keyof typeof CATEGORY_TO_GROUP;
+export type SummaryCategory = keyof typeof SUMMARY_TO_GROUP;
+
+/** Todas las categorías resumen, en el orden en que se muestran. */
+export const SUMMARY_CATEGORIES = Object.keys(SUMMARY_TO_GROUP) as SummaryCategory[];
+
+/**
+ * Categoría → categoría resumen.
+ *
+ * El orden es el de los desplegables: agrupadas por resumen para poder recorrer
+ * la lista con la vista.
+ */
+const CATEGORY_TO_SUMMARY = {
+  Ingresos: "Ingresos",
+
+  Suscripciones: "Suscripciones",
+
+  Servicios: "Servicios del hogar",
+  Luz: "Servicios del hogar",
+  "Gas Cálidda": "Servicios del hogar",
+  Mantenimiento: "Servicios del hogar",
+
+  Educación: "Educación",
+
+  Seguros: "Seguros e impuestos",
+  "Impuestos y tributos": "Seguros e impuestos",
+
+  Supermercado: "Alimentación",
+  Restaurantes: "Alimentación",
+  Delivery: "Alimentación",
+  "Café y snacks": "Alimentación",
+
+  Transporte: "Movilidad",
+  "Movilidad Taxi": "Movilidad",
+  "Peajes y estacionamiento": "Movilidad",
+
+  Combustible: "Vehículo",
+  "Mantenimiento Vehículo": "Vehículo",
+
+  Salud: "Salud y bienestar",
+  Farmacia: "Salud y bienestar",
+  "Cuidado personal": "Salud y bienestar",
+
+  Entretenimiento: "Entretenimiento",
+
+  Hogar: "Hogar",
+
+  Ropa: "Compras personales",
+
+  Tecnología: "Tecnología y compras",
+  "Compras online": "Tecnología y compras",
+
+  Regalos: "Regalos",
+
+  Transferencias: "Transferencias",
+
+  Otros: "Otros",
+} as const satisfies Record<string, SummaryCategory>;
+
+export type Category = keyof typeof CATEGORY_TO_SUMMARY;
 
 /** Todas las categorías, en el orden en que se muestran. */
-export const CATEGORIES = Object.keys(CATEGORY_TO_GROUP) as Category[];
+export const CATEGORIES = Object.keys(CATEGORY_TO_SUMMARY) as Category[];
 
 /**
  * Valor del `<option>` que representa «Sin categoría».
@@ -85,7 +135,17 @@ export const NO_CATEGORY_LABEL = "Sin categoría";
 
 /** ¿Es una de las categorías del catálogo? */
 export function isValidCategory(value: unknown): value is Category {
-  return typeof value === "string" && Object.hasOwn(CATEGORY_TO_GROUP, value);
+  return typeof value === "string" && Object.hasOwn(CATEGORY_TO_SUMMARY, value);
+}
+
+/** ¿Es una de las categorías resumen del catálogo? */
+export function isValidSummaryCategory(value: unknown): value is SummaryCategory {
+  return typeof value === "string" && Object.hasOwn(SUMMARY_TO_GROUP, value);
+}
+
+/** ¿Es uno de los tres grupos? */
+export function isValidGroup(value: unknown): value is Group {
+  return typeof value === "string" && (GROUPS as readonly string[]).includes(value);
 }
 
 /**
@@ -101,24 +161,47 @@ export function toStoredCategory(value: string | null | undefined): Category | n
 }
 
 /**
- * Grupo al que pertenece una categoría.
+ * Categoría resumen a la que pertenece una categoría.
  *
  * `null` para «sin categoría» — y también para una categoría desconocida, por si
- * quedara alguna en base de datos de una versión anterior del catálogo. Un
- * movimiento sin grupo no cuenta como gasto fijo ni variable: aparece en
- * «Pendiente de categorizar».
+ * quedara alguna en base de datos de una versión anterior del catálogo.
+ */
+export function getSummaryForCategory(
+  category: string | null | undefined,
+): SummaryCategory | null {
+  if (!category || !isValidCategory(category)) return null;
+  return CATEGORY_TO_SUMMARY[category];
+}
+
+/**
+ * Grupo al que pertenece una categoría.
+ *
+ * Se resuelve recorriendo la cadena, no con un mapeo propio: la categoría dice
+ * su resumen y el resumen dice su grupo. Un movimiento sin grupo no cuenta como
+ * gasto fijo ni variable: aparece en «Pendiente de categorizar».
  */
 export function getGroupForCategory(category: string | null | undefined): Group | null {
-  if (!category || !isValidCategory(category)) return null;
-  return CATEGORY_TO_GROUP[category];
+  const summary = getSummaryForCategory(category);
+  return summary ? SUMMARY_TO_GROUP[summary] : null;
+}
+
+/** Grupo al que pertenece una categoría resumen. */
+export function getGroupForSummary(summary: string | null | undefined): Group | null {
+  if (!summary || !isValidSummaryCategory(summary)) return null;
+  return SUMMARY_TO_GROUP[summary];
 }
 
 /** Categorías que pertenecen a un grupo. Se usa para filtrar en SQL. */
 export function getCategoriesInGroup(group: Group): Category[] {
-  return CATEGORIES.filter((category) => CATEGORY_TO_GROUP[category] === group);
+  return CATEGORIES.filter((category) => getGroupForCategory(category) === group);
 }
 
-/** ¿Es uno de los tres grupos? */
-export function isValidGroup(value: unknown): value is Group {
-  return typeof value === "string" && (GROUPS as readonly string[]).includes(value);
+/** Categorías que pertenecen a una categoría resumen. Se usa para filtrar en SQL. */
+export function getCategoriesInSummary(summary: SummaryCategory): Category[] {
+  return CATEGORIES.filter((category) => CATEGORY_TO_SUMMARY[category] === summary);
+}
+
+/** Categorías resumen que pertenecen a un grupo. */
+export function getSummariesInGroup(group: Group): SummaryCategory[] {
+  return SUMMARY_CATEGORIES.filter((summary) => SUMMARY_TO_GROUP[summary] === group);
 }

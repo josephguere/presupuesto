@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { createMovement, updateMovement } from "@/app/actions";
-import { NO_CATEGORY, getGroupForCategory } from "@/lib/categories";
+import { NO_CATEGORY, getGroupForCategory, getSummaryForCategory } from "@/lib/categories";
 import { CategoryCombobox, FORM_CATEGORY_OPTIONS } from "./CategoryCombobox";
 import { DEFAULT_OPERATION_TYPE, OPERATION_TYPES } from "@/lib/operationTypes";
 import { toDateInputValue, toTimeInputValue } from "@/lib/format";
@@ -18,11 +18,15 @@ import type { Transaction } from "@/types/transaction";
  * Vive separado del diálogo que lo abre para poder renderizarlo en las pruebas
  * sin simular la apertura del modal ni el router de Next.
  *
- * CATEGORÍA Y GRUPO. La categoría es el único de los dos que se elige. El grupo
- * se DERIVA de ella en cada render con `getGroupForCategory`, se pinta bloqueado
- * y —esto es lo que de verdad lo cierra— no lleva atributo `name`, así que no
- * viaja en el `FormData`. Aunque alguien lo inyectara a mano, el servidor lo
- * ignora: `parseMovementForm` ni siquiera lee ese campo.
+ * LA CATEGORÍA ES LO ÚNICO QUE SE ELIGE. La categoría resumen y el grupo se
+ * DERIVAN de ella en cada render, se pintan bloqueados y —esto es lo que de
+ * verdad los cierra— no llevan atributo `name`, así que no viajan en el
+ * `FormData`. Aunque alguien los inyectara a mano, el servidor los ignora:
+ * `parseMovementForm` ni siquiera lee esos campos.
+ *
+ * El orden de los campos sigue la jerarquía al leerla de abajo arriba —
+ * categoría, resumen, grupo—, que es el orden en que se van rellenando solos al
+ * elegir la primera.
  *
  * Lo que NO aparece aquí, a propósito:
  *
@@ -52,7 +56,11 @@ export function MovementForm({
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  const group = getGroupForCategory(category === NO_CATEGORY ? null : category);
+  // Los dos se derivan de la categoría en cada render. No son estado: guardarlos
+  // permitiría que se quedaran desfasados respecto a lo que el usuario ve.
+  const elegida = category === NO_CATEGORY ? null : category;
+  const summary = getSummaryForCategory(elegida);
+  const group = getGroupForCategory(elegida);
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -130,6 +138,19 @@ export function MovementForm({
             options={FORM_CATEGORY_OPTIONS}
             defaultValue={category}
             onChange={setCategory}
+          />
+        </Field>
+
+        <Field label="Categoría resumen" hint="lo decide la categoría">
+          {/* Igual que Grupo: se ve, no se toca y no lleva `name`, así que no
+              viaja en el formulario. El servidor lo deriva por su cuenta. */}
+          <input
+            type="text"
+            readOnly
+            disabled
+            aria-label="Categoría resumen del movimiento"
+            value={summary ?? "—"}
+            className={`${inputClass} cursor-not-allowed bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400`}
           />
         </Field>
 

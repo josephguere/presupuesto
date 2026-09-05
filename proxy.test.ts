@@ -63,7 +63,16 @@ describe("rutas privadas sin sesión", () => {
   });
 
   it("una cookie manipulada no sirve", async () => {
-    for (const token of ["", "cualquier-cosa", `${sesion}x`, sesion.replace(/.$/, "A")]) {
+    // Se altera el PRIMER carácter de la firma, no el último.
+    //
+    // Una firma de 32 bytes son 43 caracteres en base64url, y el último solo
+    // aporta 2 bits: cuatro de los sesenta y cuatro caracteres posibles
+    // decodifican a los mismos bytes. Tocar ahí dejaba el token intacto una de
+    // cada cuatro veces y la prueba fallaba sola, sin tener nada roto.
+    const [payload, firma] = sesion.split(".");
+    const alterada = `${payload}.${firma[0] === "A" ? "B" : "A"}${firma.slice(1)}`;
+
+    for (const token of ["", "cualquier-cosa", `${sesion}x`, alterada]) {
       const response = await proxy(request("/movimientos", token));
       expect(response.status).toBe(307);
     }

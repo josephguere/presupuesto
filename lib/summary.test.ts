@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildCategoryTotals,
+  buildGroupedTotals,
   buildSummary,
   getCurrentMonth,
   isValidDate,
   parseFilters,
   withDefaultMonth,
 } from "./transactions";
-import { getGroupForCategory, type Category } from "./categories";
+import { getGroupForCategory, getSummaryForCategory, type Category } from "./categories";
 import type { Transaction } from "@/types/transaction";
 
 /**
@@ -34,6 +34,7 @@ function movement(category: Category | null, amount: number, extra: Partial<Tran
     operationNumber: null,
     comment: null,
     category,
+    summary: getSummaryForCategory(category),
     group: getGroupForCategory(category),
     origin: "EMAIL",
     deletedAt: null,
@@ -115,27 +116,135 @@ describe("buildSummary — casos que importan", () => {
   });
 });
 
-describe("buildCategoryTotals", () => {
-  it("agrupa y ordena de mayor a menor", () => {
-    const totals = buildCategoryTotals([
-      movement("Supermercado", 650),
-      movement("Restaurantes", 320),
-      movement("Supermercado", 0),
-      movement("Transporte", 180),
-    ]);
+describe("buildGroupedTotals", () => {
+  const arbol = buildGroupedTotals([
+    movement("Delivery", 200),
+    movement("Delivery", 44.6),
+    movement("Supermercado", 74),
+    movement("Restaurantes", 100),
+    movement("Transporte", 80),
+    movement("Luz", 180),
+    movement("Servicios", 100),
+  ]);
 
-    expect(totals.map((t) => [t.category, t.total])).toEqual([
-      ["Supermercado", 650],
-      ["Restaurantes", 320],
-      ["Transporte", 180],
+  /** Busca un nodo por su etiqueta en todo el árbol. */
+  function buscar(label: string) {
+    const pila = [...arbol];
+    while (pila.length > 0) {
+      const nodo = pila.shift()!;
+      if (nodo.label === label) return nodo;
+      pila.push(...nodo.children);
+    }
+    return undefined;
+  }
+
+  it("agrupa en tres niveles: grupo, resumen y categoría", () => {
+    expect(arbol.map((g) => g.label).sort()).toEqual(["GASTOS FIJOS", "GASTOS VARIABLES"]);
+
+    const variables = buscar("GASTOS VARIABLES")!;
+    expect(variables.children.map((c) => c.label).sort()).toEqual(["Alimentación", "Movilidad"]);
+
+    const alimentacion = buscar("Alimentación")!;
+    expect(alimentacion.children.map((c) => c.label).sort()).toEqual([
+      "Delivery",
+      "Restaurantes",
+      "Supermercado",
     ]);
-    expect(totals[0].count).toBe(2);
-    expect(totals[0].group).toBe("GASTOS VARIABLES");
   });
 
-  it("incluye los movimientos sin categoría como fila propia", () => {
-    const totals = buildCategoryTotals([movement(null, 42)]);
-    expect(totals[0]).toMatchObject({ category: null, group: null, total: 42, count: 1 });
+  it("el total de una categoría suma sus movimientos", () => {
+    expect(buscar("Delivery")).toMatchObject({ total: 244.6, count: 2 });
+  });
+
+  it("el total de un resumen suma sus categorías", () => {
+    // 244.60 + 74 + 100
+    expect(buscar("Alimentación")).toMatchObject({ total: 418.6, count: 4 });
+  });
+
+  it("el total de un grupo suma sus resúmenes", () => {
+    // Alimentación 418.60 + Movilidad 80
+    expect(buscar("GASTOS VARIABLES")).toMatchObject({ total: 498.6, count: 5 });
+  });
+
+  it("los tres niveles cuadran entre sí", () => {
+    // Se suma de abajo arriba, así que esto no puede fallar por construcción;
+    // la prueba está para que siga siendo así si alguien cambia el cálculo.
+    for (const grupo of arbol) {
+      const suma = grupo.children.reduce((t, c) => t + c.total, 0);
+      expect(grupo.total).toBeCloseTo(suma, 2);
+
+      for (const resumen of grupo.children) {
+        const sumaCategorias = resumen.children.reduce((t, c) => t + c.total, 0);
+        expect(resumen.total).toBeCloseTo(sumaCategorias, 2);
+      }
+    }
+  });
+
+  it("categorías distintas del mismo resumen se agrupan juntas", () => {
+    // «Luz» y «Servicios» son ambas de «Servicios del hogar».
+    const hogar = buscar("Servicios del hogar")!;
+    expect(hogar.total).toBe(280);
+    expect(hogar.children.map((c) => c.label).sort()).toEqual(["Luz", "Servicios"]);
+  });
+
+  it("lo que no tiene categoría va a su propia rama", () => {
+    const conHuerfano = buildGroupedTotals([movement("Delivery", 50), movement(null, 999)]);
+    const etiquetas = conHuerfano.map((g) => g.label);
+
+    expect(etiquetas).toContain("Sin categoría");
+    // Y no contamina el grupo real.
+    expect(conHuerfano.find((g) => g.label === "GASTOS VARIABLES")!.total).toBe(50);
+  });
+
+  it("sin movimientos no hay filas", () => {
+    expect(buildGroupedTotals([])).toEqual([]);
+  });
+});
+
+describe("orden de los totales", () => {
+  const movimientos = [
+    movement("Delivery", 244),
+    movement("Supermercado", 74),
+    movement("Restaurantes", 60),
+    movement("Suscripciones", 500),
+  ];
+
+  it("por defecto, de mayor a menor", () => {
+    const arbol = buildGroupedTotals(movimientos);
+    expect(arbol.map((g) => g.label)).toEqual(["GASTOS FIJOS", "GASTOS VARIABLES"]);
+
+    const alimentacion = arbol[1].children[0];
+    expect(alimentacion.children.map((c) => c.label)).toEqual([
+      "Delivery",
+      "Supermercado",
+      "Restaurantes",
+    ]);
+  });
+
+  it("«menor» invierte cada nivel", () => {
+    const arbol = buildGroupedTotals(movimientos, "menor");
+    expect(arbol.map((g) => g.label)).toEqual(["GASTOS VARIABLES", "GASTOS FIJOS"]);
+
+    const alimentacion = arbol[0].children[0];
+    expect(alimentacion.children.map((c) => c.label)).toEqual([
+      "Restaurantes",
+      "Supermercado",
+      "Delivery",
+    ]);
+  });
+
+  it("ordenar NUNCA saca a una categoría de su resumen", () => {
+    // Es la regla que impide que la tabla dinámica deje de serlo.
+    for (const order of ["mayor", "menor"] as const) {
+      for (const grupo of buildGroupedTotals(movimientos, order)) {
+        for (const resumen of grupo.children) {
+          for (const categoria of resumen.children) {
+            expect(categoria.key.startsWith(`${resumen.key}/`)).toBe(true);
+          }
+          expect(resumen.key.startsWith(`${grupo.key}/`)).toBe(true);
+        }
+      }
+    }
   });
 });
 
@@ -270,5 +379,35 @@ describe("mes en curso por defecto", () => {
     for (const categoria of ["Peajes y estacionamiento", "Café y snacks", "Movilidad Taxi"]) {
       expect(parseFilters({ categoria }).filters.category).toBe(categoria);
     }
+  });
+});
+
+describe("filtro por categoría resumen", () => {
+  it("lee el parámetro de la URL", () => {
+    const { filters } = parseFilters({ categoriaResumen: "Alimentación" });
+    expect(filters.summary).toBe("Alimentación");
+  });
+
+  it("ignora resúmenes inventados", () => {
+    expect(parseFilters({ categoriaResumen: "Comida" }).filters.summary).toBeUndefined();
+    expect(parseFilters({ categoriaResumen: "" }).filters.summary).toBeUndefined();
+  });
+
+  it("se combina con el resto sin pisarlos", () => {
+    const { filters } = parseFilters({
+      mes: "2026-08",
+      categoriaResumen: "Servicios del hogar",
+      grupo: "GASTOS FIJOS",
+    });
+
+    expect(filters).toEqual({
+      month: "2026-08",
+      summary: "Servicios del hogar",
+      group: "GASTOS FIJOS",
+    });
+  });
+
+  it("se repinta en el formulario", () => {
+    expect(parseFilters({ categoriaResumen: "Movilidad" }).raw.summary).toBe("Movilidad");
   });
 });

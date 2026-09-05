@@ -2,16 +2,24 @@ import { getSupabaseAdmin } from "@/lib/supabase/server";
 import { LIMA_TIME_ZONE } from "@/lib/format";
 import { shouldShowTestData } from "@/lib/environment";
 import {
+  DEFAULT_MOVEMENT_SORT,
+  parseMovementSort,
+  type MovementSort,
+} from "@/lib/movementSort";
+import {
   getCategoriesInGroup,
+  getCategoriesInSummary,
   getGroupForCategory,
+  getSummaryForCategory,
   isValidCategory,
   isValidGroup,
+  isValidSummaryCategory,
   type Category,
   type Group,
+  type SummaryCategory,
 } from "@/lib/categories";
 import {
   BASE_CURRENCY,
-  type CategoryTotal,
   type Summary,
   type Transaction,
   type TransactionRow,
@@ -118,11 +126,15 @@ export interface TransactionFilters {
   category?: Category;
   /** `true` para quedarse solo con los que no tienen categoría. */
   uncategorized?: boolean;
+  /** Nivel intermedio: filtra por todas las categorías que agrupa. */
+  summary?: SummaryCategory;
   group?: Group;
   merchant?: string;
   limit?: number;
   /** Por defecto `activos`: un movimiento eliminado no existe para el resto. */
   status?: TransactionStatus;
+  /** Por defecto, lo más reciente primero. */
+  sort?: MovementSort;
 }
 
 /** ¿Está el usuario filtrando por rango personalizado en vez de por mes? */
@@ -142,7 +154,14 @@ export function usesCustomRange(filters: {
 export interface ParsedFilters {
   filters: TransactionFilters;
   /** Los valores tal como deben repintarse en el formulario. */
-  raw: { month?: string; from?: string; to?: string; category?: string; group?: string };
+  raw: {
+    month?: string;
+    from?: string;
+    to?: string;
+    category?: string;
+    summary?: string;
+    group?: string;
+  };
   mode: "month" | "range";
   /**
    * El usuario pidió explícitamente «Todos los meses».
@@ -152,6 +171,8 @@ export interface ParsedFilters {
    * opción no funcionaría nunca.
    */
   allMonths: boolean;
+  /** Orden pedido en la URL. Se conserva al filtrar y se pierde al limpiar. */
+  sort: MovementSort;
 }
 
 export function parseFilters(
@@ -164,6 +185,7 @@ export function parseFilters(
   const to = one(params.hasta);
   const monthParam = one(params.mes);
   const categoryParam = one(params.categoria);
+  const summaryParam = one(params.categoriaResumen);
   const groupParam = one(params.grupo);
 
   const mode: "month" | "range" = usesCustomRange({ from, to }) ? "range" : "month";
@@ -181,7 +203,12 @@ export function parseFilters(
   if (categoryParam === UNCATEGORIZED_FILTER) filters.uncategorized = true;
   else if (isValidCategory(categoryParam)) filters.category = categoryParam;
 
+  if (isValidSummaryCategory(summaryParam)) filters.summary = summaryParam;
+
   if (isValidGroup(groupParam)) filters.group = groupParam;
+
+  const sort = parseMovementSort(params.orden);
+  if (sort !== DEFAULT_MOVEMENT_SORT) filters.sort = sort;
 
   return {
     filters,
@@ -190,12 +217,14 @@ export function parseFilters(
       from: isValidDate(from) ? from : undefined,
       to: isValidDate(to) ? to : undefined,
       category: categoryParam,
+      summary: summaryParam,
       group: groupParam,
     },
     mode,
     // `mes=` vacío es la opción «Todos los meses» del desplegable. Un `mes`
     // inválido no cuenta: se trata como si no viniera y se aplica el mes actual.
     allMonths: firstValue(params.mes) === "",
+    sort,
   };
 }
 
@@ -221,6 +250,7 @@ export function withDefaultMonth(parsed: ParsedFilters): TransactionFilters {
   if (parsed.allMonths) return parsed.filters;
 
   return { ...parsed.filters, month: getCurrentMonth() };
+  // (el orden ya viaja dentro de `parsed.filters`)
 }
 
 /** Valor del filtro de categoría que representa «solo los que no tienen». */
@@ -250,6 +280,7 @@ function toTransaction(row: TransactionRow): Transaction {
     operationNumber: row.operation_number,
     comment: row.comment,
     category,
+    summary: getSummaryForCategory(category),
     group: getGroupForCategory(category),
     origin: row.origin ?? "EMAIL",
     deletedAt: row.eliminado_at ?? null,
@@ -258,11 +289,29 @@ function toTransaction(row: TransactionRow): Transaction {
 
 /** Movimientos que cumplen los filtros, del más reciente al más antiguo. */
 export async function getTransactions(filters: TransactionFilters = {}): Promise<Transaction[]> {
-  let query = getSupabaseAdmin()
-    .from("transactions")
-    .select(COLUMNS)
-    .order("transaction_at", { ascending: false, nullsFirst: false })
-    .limit(Math.min(filters.limit ?? MAX_ROWS, MAX_ROWS));
+  // El orden va en la CONSULTA, no sobre el array ya leído: así se ordenan
+  // todos los movimientos que cumplen los filtros y no solo los que hubiera
+  // cargados, que es lo que importaría el día que haya paginación.
+  //
+  // Al ordenar por monto, la fecha queda como criterio de desempate: dos gastos
+  // iguales se leen mejor del más reciente al más antiguo que en orden
+  // arbitrario, que es lo que da la base de datos si no se le dice nada.
+  const sort = filters.sort ?? DEFAULT_MOVEMENT_SORT;
+
+  let query = getSupabaseAdmin().from("transactions").select(COLUMNS);
+
+  if (sort === "monto-desc" || sort === "monto-asc") {
+    query = query
+      .order("amount", { ascending: sort === "monto-asc", nullsFirst: false })
+      .order("transaction_at", { ascending: false, nullsFirst: false });
+  } else {
+    query = query.order("transaction_at", {
+      ascending: sort === "antiguos",
+      nullsFirst: false,
+    });
+  }
+
+  query = query.limit(Math.min(filters.limit ?? MAX_ROWS, MAX_ROWS));
 
   // El rango personalizado manda sobre el mes.
   if (filters.from || filters.to) {
@@ -274,13 +323,16 @@ export async function getTransactions(filters: TransactionFilters = {}): Promise
     query = query.gte("transaction_at", from).lt("transaction_at", to);
   }
 
+  // Los tres niveles se traducen a un filtro sobre `category`, que es lo único
+  // que existe en la base de datos. Se aplica el MÁS específico: pedir a la vez
+  // «Alimentación» y «Delivery» tiene que devolver Delivery, no toda la familia.
   if (filters.uncategorized) {
     query = query.is("category", null);
   } else if (filters.category) {
     query = query.eq("category", filters.category);
+  } else if (filters.summary) {
+    query = query.in("category", getCategoriesInSummary(filters.summary));
   } else if (filters.group) {
-    // El grupo se deriva de la categoría, así que filtrar por grupo es filtrar
-    // por el conjunto de categorías que lo componen.
     query = query.in("category", getCategoriesInGroup(filters.group));
   }
 
@@ -298,10 +350,16 @@ export async function getTransactions(filters: TransactionFilters = {}): Promise
 
   let rows = (data ?? []).map(toTransaction);
 
-  // Si se combinan grupo Y categoría, la consulta ya filtró por categoría; queda
-  // comprobar que además pertenezca al grupo pedido.
-  if (filters.group && filters.category) {
-    rows = rows.filter((transaction) => transaction.group === filters.group);
+  // Al combinar niveles, la consulta filtró por el más específico; aquí se
+  // comprueba que además cumpla los otros. Sin esto, pedir «Alimentación» +
+  // GASTOS FIJOS devolvería los de Alimentación, que son variables.
+  if (filters.category || filters.summary) {
+    if (filters.summary) {
+      rows = rows.filter((transaction) => transaction.summary === filters.summary);
+    }
+    if (filters.group) {
+      rows = rows.filter((transaction) => transaction.group === filters.group);
+    }
   }
 
   return rows;
@@ -357,29 +415,14 @@ export function buildSummary(transactions: Transaction[]): Summary {
   };
 }
 
-/** Totales por categoría, de mayor a menor importe. */
-export function buildCategoryTotals(transactions: Transaction[]): CategoryTotal[] {
-  const byCategory = new Map<string, CategoryTotal>();
+/* -------------------------------------------------------------------------- */
+/* Totales del resumen                                                         */
+/* -------------------------------------------------------------------------- */
 
-  for (const transaction of transactions) {
-    const key = transaction.category ?? "__none__";
-    const current = byCategory.get(key);
-
-    if (current) {
-      current.total = round2(current.total + transaction.amount);
-      current.count += 1;
-    } else {
-      byCategory.set(key, {
-        category: transaction.category,
-        group: transaction.group,
-        total: transaction.amount,
-        count: 1,
-      });
-    }
-  }
-
-  return [...byCategory.values()].sort((a, b) => b.total - a.total);
-}
+// La agregación vive en `lib/totals.ts`, que es puro y por tanto utilizable
+// también desde el navegador. Se reexporta para que quien lea movimientos no
+// tenga que saber en qué módulo está cada pieza.
+export { buildGroupedTotals, parseTotalsOrder, sortTotals, type TotalsOrder } from "./totals";
 
 /* -------------------------------------------------------------------------- */
 /* Catálogos para los desplegables                                             */

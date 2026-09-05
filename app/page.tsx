@@ -2,12 +2,13 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { hasValidSession } from "@/lib/auth/guard";
 import { SummaryCards } from "@/components/SummaryCards";
-import { CategoryTotals } from "@/components/CategoryTotals";
+import { TotalsPivot } from "@/components/TotalsPivot";
 import { FiltersBar } from "@/components/FiltersBar";
 import { TransactionsTable } from "@/components/TransactionsTable";
 import { SetupNotice } from "@/components/SetupNotice";
+import { PageContainer } from "@/components/PageContainer";
 import {
-  buildCategoryTotals,
+  buildGroupedTotals,
   buildSummary,
   getAvailableMonths,
   getCurrentMonth,
@@ -17,7 +18,7 @@ import {
 } from "@/lib/transactions";
 import { formatMonthLabel } from "@/lib/format";
 import { describeError } from "@/lib/logger";
-import type { CategoryTotal, Summary, Transaction } from "@/types/transaction";
+import type { Summary, TotalsNode, Transaction } from "@/types/transaction";
 
 /**
  * Resumen: indicadores, totales por categoría y últimos movimientos.
@@ -55,7 +56,7 @@ export default async function ResumenPage(props: PageProps<"/">) {
 
   let transactions: Transaction[] = [];
   let summary: Summary | null = null;
-  let totals: CategoryTotal[] = [];
+  let totals: TotalsNode[] = [];
   let months: string[] = [];
   let error: string | null = null;
 
@@ -65,13 +66,13 @@ export default async function ResumenPage(props: PageProps<"/">) {
       getAvailableMonths(),
     ]);
     summary = buildSummary(transactions);
-    totals = buildCategoryTotals(transactions);
+    totals = buildGroupedTotals(transactions);
   } catch (caught) {
     error = describeError(caught);
   }
 
   return (
-    <div className="space-y-6 sm:space-y-8">
+    <PageContainer className="space-y-6 sm:space-y-8">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">{periodLabel}</h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
@@ -93,9 +94,9 @@ export default async function ResumenPage(props: PageProps<"/">) {
           {summary && <SummaryCards summary={summary} />}
 
           <section className="space-y-3">
-            <h2 className="text-lg font-semibold tracking-tight">Por categoría</h2>
+            <h2 className="text-lg font-semibold tracking-tight">Totales por grupo y categoría</h2>
             {totals.length > 0 ? (
-              <CategoryTotals totals={totals} />
+              <TotalsPivot nodes={totals} />
             ) : (
               <p className="rounded-xl border border-dashed border-zinc-300 bg-white p-6 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400">
                 No hay movimientos en este período.
@@ -123,7 +124,7 @@ export default async function ResumenPage(props: PageProps<"/">) {
           </section>
         </>
       )}
-    </div>
+    </PageContainer>
   );
 }
 

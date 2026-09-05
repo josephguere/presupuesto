@@ -1,4 +1,11 @@
-import { CATEGORIES, GROUPS, NO_CATEGORY_LABEL } from "@/lib/categories";
+import {
+  CATEGORIES,
+  GROUPS,
+  NO_CATEGORY_LABEL,
+  SUMMARY_CATEGORIES,
+  getCategoriesInSummary,
+  isValidSummaryCategory,
+} from "@/lib/categories";
 import { CategoryCombobox, type CategoryOption } from "./CategoryCombobox";
 import { formatMonthLabel } from "@/lib/format";
 import { UNCATEGORIZED_FILTER } from "@/lib/transactions";
@@ -28,16 +35,33 @@ export function FiltersBar({
   months,
   values,
   mode,
+  sort,
 }: {
   /** A qué ruta se envía el formulario. */
   action: string;
   months: string[];
-  values: { month?: string; from?: string; to?: string; category?: string; group?: string };
+  /** Orden actual, para que filtrar no lo pierda. */
+  sort?: string;
+  values: {
+    month?: string;
+    from?: string;
+    to?: string;
+    category?: string;
+    summary?: string;
+    group?: string;
+  };
   mode: "month" | "range";
 }) {
   const isRange = mode === "range";
+
+  // Filtros coherentes entre sí: con un resumen elegido, Categoría solo ofrece
+  // las suyas.
+  const activeSummary = isValidSummaryCategory(values.summary) ? values.summary : null;
+
+  const categoryOptions = categoryOptionsFor(activeSummary);
+  const categoryHint = activeSummary ? `dentro de ${activeSummary}` : undefined;
   const hasFilters = Boolean(
-    values.month || values.from || values.to || values.category || values.group,
+    values.month || values.from || values.to || values.category || values.summary || values.group,
   );
 
   return (
@@ -46,7 +70,12 @@ export function FiltersBar({
       action={action}
       className="rounded-xl border border-zinc-200 bg-white p-3 sm:p-4 dark:border-zinc-800 dark:bg-zinc-900"
     >
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 [&>*]:min-w-0">
+      {/* El orden viaja escondido en el formulario. Sin esto, filtrar volvería
+          a «Más recientes» sin que el usuario lo haya pedido. «Limpiar» es un
+          enlace a la ruta pelada, así que ahí sí desaparece, que es lo acordado. */}
+      {sort && <input type="hidden" name="orden" value={sort} />}
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5 [&>*]:min-w-0">
         <Field label="Mes" hint={isRange ? "ignorado: hay un rango" : undefined} dimmed={isRange}>
           <select name="mes" defaultValue={values.month ?? ""} className={inputClass}>
             {/* Vacío = «todos». Al entrar sin filtros la página preselecciona el
@@ -61,10 +90,25 @@ export function FiltersBar({
           </select>
         </Field>
 
-        <Field label="Categoría">
+        <Field label="Categoría resumen">
           <CategoryCombobox
+            name="categoriaResumen"
+            options={FILTER_SUMMARY_OPTIONS}
+            defaultValue={values.summary ?? ""}
+            ariaLabel="Filtrar por categoría resumen"
+          />
+        </Field>
+
+        <Field label="Categoría" hint={categoryHint}>
+          {/* Las opciones se reducen a las del resumen elegido. Sin esto se
+              puede pedir «Alimentación» + «Luz», que no devuelve nada y parece
+              un fallo en vez de una combinación imposible. */}
+          <CategoryCombobox
+            // Al cambiar el resumen cambia la lista: la `key` fuerza a remontar
+            // el combo para que no siga mostrando una categoría de otra familia.
+            key={values.summary ?? "todas"}
             name="categoria"
-            options={FILTER_CATEGORY_OPTIONS}
+            options={categoryOptions}
             defaultValue={values.category ?? ""}
             ariaLabel="Filtrar por categoría"
           />
@@ -118,6 +162,33 @@ export function FiltersBar({
     </form>
   );
 }
+
+/**
+ * Opciones del filtro de categoría, dependientes del resumen elegido.
+ *
+ * Con un resumen activo solo se ofrecen sus categorías. Sin esto se puede pedir
+ * «Alimentación» + «Luz», que no devuelve nada y se lee como un fallo en vez de
+ * como una combinación imposible.
+ *
+ * Está fuera del componente para poder probarla sin renderizar el formulario.
+ */
+export function categoryOptionsFor(summary: string | null): CategoryOption[] {
+  if (!isValidSummaryCategory(summary)) return FILTER_CATEGORY_OPTIONS;
+
+  return [
+    { value: "", label: "Todas" },
+    ...getCategoriesInSummary(summary).map((category) => ({
+      value: category,
+      label: category,
+    })),
+  ];
+}
+
+/** Opciones del filtro de categoría resumen. */
+const FILTER_SUMMARY_OPTIONS: CategoryOption[] = [
+  { value: "", label: "Todas" },
+  ...SUMMARY_CATEGORIES.map((summary) => ({ value: summary, label: summary })),
+];
 
 /** Opciones del filtro: «Todas» primero, luego «Sin categoría» y el catálogo. */
 const FILTER_CATEGORY_OPTIONS: CategoryOption[] = [

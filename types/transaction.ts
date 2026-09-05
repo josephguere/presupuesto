@@ -1,4 +1,4 @@
-import type { Category, Group } from "@/lib/categories";
+import type { Category, Group, SummaryCategory } from "@/lib/categories";
 
 /**
  * Tipos de dominio del presupuesto.
@@ -127,7 +127,15 @@ export interface Transaction {
   operationNumber: string | null;
   comment: string | null;
   category: Category | null;
-  /** Derivado de la categoría, nunca almacenado. */
+  /**
+   * Nivel intermedio de la jerarquía, derivado de la categoría.
+   *
+   * Ni este ni `group` se almacenan: se calculan al leer, así que reagrupar
+   * categorías no exige migración ni puede dejar un movimiento con un resumen
+   * que ya no le corresponde.
+   */
+  summary: SummaryCategory | null;
+  /** Derivado de la categoría a través del resumen, nunca almacenado. */
   group: Group | null;
   origin: Origin;
   /**
@@ -160,10 +168,19 @@ export interface Summary {
   largestAmount: number;
 }
 
-/** Una fila del resumen por categoría. */
-export interface CategoryTotal {
-  category: Category | null;
-  group: Group | null;
+/**
+ * Un nodo de la tabla dinámica del resumen.
+ *
+ * La misma forma sirve para los tres niveles —grupo, categoría resumen y
+ * categoría—, que solo se distinguen por si tienen hijos. Repetir la estructura
+ * en tres interfaces obligaría a triplicar el código que suma y ordena.
+ */
+export interface TotalsNode {
+  /** Lo que se ve en la fila. */
+  label: string;
+  /** Identificador estable para el estado de expandir/contraer. */
+  key: string;
   total: number;
   count: number;
+  children: TotalsNode[];
 }

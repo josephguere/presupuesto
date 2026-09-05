@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   CATEGORIES,
   GROUPS,
+  SUMMARY_CATEGORIES,
+  getCategoriesInSummary,
+  getGroupForSummary,
+  getSummaryForCategory,
+  isValidSummaryCategory,
   NO_CATEGORY,
   getCategoriesInGroup,
   getGroupForCategory,
@@ -15,13 +20,19 @@ describe("catálogo de categorías", () => {
     expect(new Set(CATEGORIES).size).toBe(CATEGORIES.length);
   });
 
-  it("contiene las 26 categorías acordadas", () => {
+  it("contiene las 29 categorías acordadas", () => {
     expect(CATEGORIES).toEqual([
       "Ingresos",
 
       "Suscripciones",
+
       "Servicios",
+      "Luz",
+      "Gas Cálidda",
+      "Mantenimiento",
+
       "Educación",
+
       "Seguros",
       "Impuestos y tributos",
 
@@ -29,19 +40,25 @@ describe("catálogo de categorías", () => {
       "Restaurantes",
       "Delivery",
       "Café y snacks",
+
       "Transporte",
       "Movilidad Taxi",
       "Peajes y estacionamiento",
+
       "Combustible",
       "Mantenimiento Vehículo",
+
       "Salud",
       "Farmacia",
       "Cuidado personal",
+
       "Entretenimiento",
       "Hogar",
       "Ropa",
+
       "Tecnología",
       "Compras online",
+
       "Regalos",
       "Transferencias",
       "Otros",
@@ -185,10 +202,13 @@ describe("grupo → categorías", () => {
     expect(getCategoriesInGroup("INGRESOS")).toEqual(["Ingresos"]);
   });
 
-  it("GASTOS FIJOS son los cinco acordados", () => {
+  it("GASTOS FIJOS son los ocho acordados", () => {
     expect(getCategoriesInGroup("GASTOS FIJOS")).toEqual([
       "Suscripciones",
       "Servicios",
+      "Luz",
+      "Gas Cálidda",
+      "Mantenimiento",
       "Educación",
       "Seguros",
       "Impuestos y tributos",
@@ -200,5 +220,124 @@ describe("grupo → categorías", () => {
     expect(isValidGroup("ingresos")).toBe(false);
     expect(isValidGroup("GASTOS")).toBe(false);
     expect(isValidGroup(null)).toBe(false);
+  });
+});
+
+describe("categoría resumen", () => {
+  it("el mapeo acordado, fila por fila", () => {
+    const mapeo = [
+      ["Ingresos", "Ingresos"],
+      ["Suscripciones", "Suscripciones"],
+      ["Servicios", "Servicios del hogar"],
+      ["Educación", "Educación"],
+      ["Seguros", "Seguros e impuestos"],
+      ["Impuestos y tributos", "Seguros e impuestos"],
+      ["Supermercado", "Alimentación"],
+      ["Restaurantes", "Alimentación"],
+      ["Delivery", "Alimentación"],
+      ["Café y snacks", "Alimentación"],
+      ["Transporte", "Movilidad"],
+      ["Movilidad Taxi", "Movilidad"],
+      ["Peajes y estacionamiento", "Movilidad"],
+      ["Combustible", "Vehículo"],
+      ["Mantenimiento Vehículo", "Vehículo"],
+      ["Salud", "Salud y bienestar"],
+      ["Farmacia", "Salud y bienestar"],
+      ["Cuidado personal", "Salud y bienestar"],
+      ["Entretenimiento", "Entretenimiento"],
+      ["Hogar", "Hogar"],
+      ["Ropa", "Compras personales"],
+      ["Tecnología", "Tecnología y compras"],
+      ["Compras online", "Tecnología y compras"],
+      ["Regalos", "Regalos"],
+      ["Transferencias", "Transferencias"],
+      ["Otros", "Otros"],
+      ["Luz", "Servicios del hogar"],
+      ["Gas Cálidda", "Servicios del hogar"],
+      ["Mantenimiento", "Servicios del hogar"],
+    ] as const;
+
+    expect(mapeo).toHaveLength(CATEGORIES.length);
+
+    for (const [category, summary] of mapeo) {
+      expect(getSummaryForCategory(category)).toBe(summary);
+    }
+  });
+
+  it("los ejemplos del acuerdo, con su grupo", () => {
+    const casos = [
+      ["Delivery", "Alimentación", "GASTOS VARIABLES"],
+      ["Luz", "Servicios del hogar", "GASTOS FIJOS"],
+      ["Seguros", "Seguros e impuestos", "GASTOS FIJOS"],
+      ["Combustible", "Vehículo", "GASTOS VARIABLES"],
+    ] as const;
+
+    for (const [category, summary, group] of casos) {
+      expect(getSummaryForCategory(category)).toBe(summary);
+      expect(getGroupForCategory(category)).toBe(group);
+    }
+  });
+
+  it("toda categoría tiene resumen, y todo resumen tiene grupo", () => {
+    for (const category of CATEGORIES) {
+      const summary = getSummaryForCategory(category);
+      expect(summary).not.toBeNull();
+      expect(GROUPS).toContain(getGroupForSummary(summary));
+    }
+  });
+
+  it("el grupo de una categoría es el de su resumen", () => {
+    // La cadena no puede romperse: es la propiedad que sostiene la jerarquía.
+    for (const category of CATEGORIES) {
+      expect(getGroupForCategory(category)).toBe(
+        getGroupForSummary(getSummaryForCategory(category)),
+      );
+    }
+  });
+
+  it("los resúmenes particionan el catálogo sin solaparse", () => {
+    const desdeResumenes = SUMMARY_CATEGORIES.flatMap((s) => getCategoriesInSummary(s));
+
+    expect(new Set(desdeResumenes).size).toBe(desdeResumenes.length);
+    expect([...desdeResumenes].sort()).toEqual([...CATEGORIES].sort());
+  });
+
+  it("todas las categorías de un resumen comparten grupo", () => {
+    // Si una se saliera, «Alimentación» aparecería a la vez en dos grupos y la
+    // tabla dinámica dejaría de cuadrar.
+    for (const summary of SUMMARY_CATEGORIES) {
+      const grupos = new Set(getCategoriesInSummary(summary).map(getGroupForCategory));
+      expect(grupos.size).toBe(1);
+    }
+  });
+
+  it("«Servicios del hogar» agrupa las cuatro del acuerdo", () => {
+    expect(getCategoriesInSummary("Servicios del hogar").sort()).toEqual([
+      "Gas Cálidda",
+      "Luz",
+      "Mantenimiento",
+      "Servicios",
+    ]);
+  });
+
+  it("«Alimentación» agrupa las cuatro del acuerdo", () => {
+    expect(getCategoriesInSummary("Alimentación").sort()).toEqual([
+      "Café y snacks",
+      "Delivery",
+      "Restaurantes",
+      "Supermercado",
+    ]);
+  });
+
+  it("rechaza resúmenes inventados", () => {
+    for (const value of ["alimentacion", "Comida", "", null, 42]) {
+      expect(isValidSummaryCategory(value)).toBe(false);
+    }
+    expect(isValidSummaryCategory("Alimentación")).toBe(true);
+  });
+
+  it("sin categoría no hay resumen", () => {
+    expect(getSummaryForCategory(null)).toBeNull();
+    expect(getSummaryForCategory("Cripto")).toBeNull();
   });
 });

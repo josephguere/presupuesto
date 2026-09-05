@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CATEGORIES, getGroupForCategory } from "@/lib/categories";
+import { CATEGORIES, getGroupForCategory, getSummaryForCategory } from "@/lib/categories";
 import type { Transaction } from "@/types/transaction";
 
 /**
@@ -35,6 +35,7 @@ function movement(overrides: Partial<Transaction> = {}): Transaction {
     operationNumber: "123456",
     comment: null,
     category: "Transporte",
+    summary: getSummaryForCategory("Transporte"),
     group: "GASTOS VARIABLES",
     origin: "EMAIL",
     deletedAt: null,

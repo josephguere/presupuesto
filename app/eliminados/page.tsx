@@ -4,6 +4,7 @@ import { hasValidSession } from "@/lib/auth/guard";
 import { TransactionsTable } from "@/components/TransactionsTable";
 import { FiltersBar } from "@/components/FiltersBar";
 import { SetupNotice } from "@/components/SetupNotice";
+import { PageContainer } from "@/components/PageContainer";
 import { getAvailableMonths, getTransactions, parseFilters } from "@/lib/transactions";
 import { describeError } from "@/lib/logger";
 import type { Transaction } from "@/types/transaction";
@@ -46,7 +47,7 @@ export default async function EliminadosPage(props: PageProps<"/eliminados">) {
   }
 
   return (
-    <div className="space-y-6">
+    <PageContainer wide className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Eliminados</h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
@@ -78,6 +79,6 @@ export default async function EliminadosPage(props: PageProps<"/eliminados">) {
           />
         </>
       )}
-    </div>
+    </PageContainer>
   );
 }

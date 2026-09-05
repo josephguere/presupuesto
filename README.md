@@ -60,7 +60,8 @@ presupuesto/
 │       └── route.test.ts              Tests de idempotencia y seguridad
 ├── components/
 │   ├── SummaryCards.tsx               Indicadores del período
-│   ├── CategoryTotals.tsx             Resumen por categoría
+│   ├── TotalsPivot.tsx                Totales en 3 niveles, plegables
+│   ├── MovementSortControl.tsx        Selector de orden, solo móvil
 │   ├── FiltersBar.tsx                 Mes, rango, categoría y grupo
 │   ├── MovementForm.tsx               Formulario de crear y editar
 │   ├── MovementDialog.tsx             Modal que envuelve al formulario
@@ -72,7 +73,9 @@ presupuesto/
 │   └── SetupNotice.tsx                Aviso si falta configuración
 ├── lib/
 │   ├── format.ts                      Intl es-PE / America/Lima
-│   ├── categories.ts                  Lista de categorías de gasto
+│   ├── categories.ts                  Catálogo: categoría → resumen → grupo
+│   ├── totals.ts                      Agregación de la tabla dinámica
+│   ├── movementSort.ts                Orden de la lista de movimientos
 │   ├── environment.ts                 Corte entre datos de prueba y reales
 │   ├── logger.ts                      Logs estructurados, sin secretos
 │   ├── transactions.ts                Lectura de movimientos y resumen
@@ -998,20 +1001,42 @@ un movimiento es **Editar**, que abre el formulario completo y valida todo junto
 y editarlo no lo convierte en manual. Se fija en el servidor, nunca desde el
 formulario.
 
-### Categoría → Grupo
+### Grupo → Categoría resumen → Categoría
 
-El grupo **no se guarda en la base de datos**: se deriva de la categoría al leer.
-Así nunca hay dos verdades que puedan discrepar, y cambiar la categoría de un
-movimiento recalcula el grupo sin migración alguna.
+Tres niveles, y **solo el último lo elige el usuario**. Los otros dos se derivan
+y no se guardan en la base de datos: se calculan al leer. Así nunca hay dos
+verdades que puedan discrepar, y reagrupar categorías mañana no exige migración
+ni toca un solo movimiento.
 
-| Grupo | Categorías |
-|---|---|
-| `INGRESOS` | Ingresos |
-| `GASTOS FIJOS` | Suscripciones · Servicios · Educación |
-| `GASTOS VARIABLES` | Supermercado · Restaurantes · Delivery · Transporte · Combustible · Salud · Farmacia · Entretenimiento · Hogar · Ropa · Tecnología · Transferencias · Otros |
-| *(sin grupo)* | Sin categoría |
+El catálogo se declara **encadenado**, no por duplicado: cada categoría dice a
+qué resumen pertenece, y cada resumen a qué grupo. Eso hace imposible la
+incoherencia que sí permitirían dos mapeos separados —que «Luz» apuntara a
+«Servicios del hogar» y a la vez a un grupo distinto del resto de esa familia—.
 
-El formulario **muestra el grupo, pero bloqueado**: se recalcula en cuanto
+| Grupo | Categoría resumen | Categorías |
+|---|---|---|
+| `INGRESOS` | Ingresos | Ingresos |
+| `GASTOS FIJOS` | Suscripciones | Suscripciones |
+| | Servicios del hogar | Servicios · Luz · Gas Cálidda · Mantenimiento |
+| | Educación | Educación |
+| | Seguros e impuestos | Seguros · Impuestos y tributos |
+| `GASTOS VARIABLES` | Alimentación | Supermercado · Restaurantes · Delivery · Café y snacks |
+| | Movilidad | Transporte · Movilidad Taxi · Peajes y estacionamiento |
+| | Vehículo | Combustible · Mantenimiento Vehículo |
+| | Salud y bienestar | Salud · Farmacia · Cuidado personal |
+| | Entretenimiento | Entretenimiento |
+| | Hogar | Hogar |
+| | Compras personales | Ropa |
+| | Tecnología y compras | Tecnología · Compras online |
+| | Regalos | Regalos |
+| | Transferencias | Transferencias |
+| | Otros | Otros |
+| *(sin grupo)* | — | Sin categoría |
+
+29 categorías en 16 categorías resumen. **Añadir una es añadir una línea** a
+`lib/categories.ts`: no hay tabla, ni `seed`, ni migración.
+
+El formulario **muestra la categoría resumen y el grupo, pero bloqueados**: se recalcula en cuanto
 cambias la categoría. El campo no lleva atributo `name`, así que ni siquiera
 viaja al servidor. Y aunque alguien lo inyectara, el servidor lo ignora y vuelve
 a derivarlo — hay un test que intenta colar un gasto dentro de INGRESOS y
@@ -1051,6 +1076,62 @@ reprocesado tampoco resucita una baja: eso lo decide el usuario.
 > `npm run db:clear` es otra cosa: es la herramienta de mantenimiento para vaciar
 > datos de prueba, y esa sí borra de verdad.
 
+### Ordenar los movimientos
+
+| Parámetro | Efecto |
+|---|---|
+| *(ninguno)* | Lo más reciente primero |
+| `?orden=antiguos` | Lo más antiguo primero |
+| `?orden=monto-desc` | Mayor monto |
+| `?orden=monto-asc` | Menor monto |
+
+En escritorio se ordena pulsando la cabecera **Monto** —primer clic mayor a
+menor, el siguiente al revés—; en móvil, con el selector **Ordenar por**, porque
+en tarjetas no hay cabecera que pulsar. Cada uno aparece solo en su tamaño: tener
+los dos a la vez invitaría a preguntarse cuál manda.
+
+**El orden vive en la URL, no en el estado de un componente.** Los filtros son un
+formulario GET, así que aplicarlos navega y un orden guardado en memoria se
+perdería en cada filtrado. Al estar en la URL: se conserva al filtrar, lo
+comparten la cabecera y el selector sin coordinarse, sobrevive a cambiar el
+tamaño de la ventana, y «Limpiar» —que es un enlace a la ruta pelada— lo quita
+sin necesidad de reiniciar nada a mano.
+
+Se ordena en el `ORDER BY` de la consulta, no sobre la lista ya leída: así se
+ordenan todos los movimientos que cumplen los filtros, que es lo que importará el
+día que haya paginación. Al ordenar por monto, la fecha queda de desempate: dos
+gastos iguales se leen mejor del más reciente al más antiguo que en orden
+arbitrario.
+
+### Totales por grupo y categoría
+
+El resumen los muestra en una tabla dinámica de tres niveles, plegable:
+
+```
+▼ GASTOS FIJOS                       5      S/ 925.60
+    ▼ Seguros e impuestos            2      S/ 616.60
+        Seguros                      2      S/ 616.60
+    ▼ Servicios del hogar            3      S/ 309.00
+        Servicios                    3      S/ 309.00
+```
+
+Se suma **de abajo arriba**: el total de un resumen es la suma de sus categorías
+y el de un grupo la de sus resúmenes, de modo que los tres niveles cuadran por
+construcción. Sumar cada nivel por separado daría los mismos números hoy y
+permitiría que dejaran de cuadrar mañana.
+
+Al entrar nace **desplegado hasta categoría resumen**: los grupos abiertos y sus
+resúmenes cerrados. Es el nivel en el que se responde «¿en qué se me va el
+dinero?» sin leer veintinueve filas. No se recuerda entre visitas —es estado de
+componente, no `localStorage`—, pero sí se conserva al cambiar los filtros.
+
+Se puede ordenar por mayor o menor monto. El orden se aplica **dentro de cada
+nivel**, nunca entre niveles: una categoría no puede aparecer fuera de su
+resumen ni un resumen fuera de su grupo.
+
+Plegar y ordenar son lo único que vive en el cliente, porque no cambian qué
+movimientos se están mirando. Los filtros, que sí, siguen en la URL.
+
 ### Indicadores
 
 ```
@@ -1070,8 +1151,17 @@ Compartidos entre Resumen, Movimientos y Eliminados, con el mismo contrato de UR
 |---|---|
 | `mes` | `?mes=2026-08` |
 | `desde` / `hasta` | `?desde=2026-08-01&hasta=2026-08-15` |
+| `categoriaResumen` | `?categoriaResumen=Alimentaci%C3%B3n` |
 | `categoria` | `?categoria=Restaurantes` |
 | `grupo` | `?grupo=GASTOS%20VARIABLES` |
+
+Los tres niveles se traducen a un filtro sobre `category`, que es lo único que
+existe en la base de datos, y se aplica **el más específico**: pedir a la vez
+«Alimentación» y «Delivery» devuelve Delivery, no toda la familia.
+
+Con una categoría resumen elegida, el desplegable de categoría **solo ofrece las
+suyas**. Sin eso se puede pedir «Alimentación» + «Luz», que no devuelve nada y se
+lee como un fallo en vez de como una combinación imposible.
 
 El rango personalizado **tiene prioridad** sobre el mes, y la interfaz atenúa el
 selector de mes cuando hay un rango activo para que se vea cuál manda.

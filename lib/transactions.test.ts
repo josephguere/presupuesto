@@ -34,12 +34,17 @@ function createQuery() {
   const inLists: Array<[string, unknown[]]> = [];
   const ranges: Array<[string, "gte" | "lt", string]> = [];
 
+  const orders: Array<[string, boolean]> = [];
+
   const query = {
     select(columns: string) {
       state.selected = columns;
       return query;
     },
-    order: () => query,
+    order(column: string, options?: { ascending?: boolean }) {
+      orders.push([column, options?.ascending ?? true]);
+      return query;
+    },
     limit: () => query,
     eq(column: string, value: unknown) {
       equals.push([column, value]);
@@ -77,14 +82,34 @@ function createQuery() {
             return operator === "gte" ? actual >= value : actual < value;
           }),
       );
-      return Promise.resolve({ data, error: null });
+
+      // PostgreSQL ordena por las columnas en el orden en que se piden, y el
+      // desempate importa: es lo que decide qué se ve primero entre dos gastos
+      // del mismo importe.
+      const ordenado = [...data].sort((a, b) => {
+        for (const [column, ascending] of orders) {
+          const izquierda = a[column];
+          const derecha = b[column];
+          if (izquierda === derecha) continue;
+
+          const comparacion =
+            column === "amount"
+              ? Number(izquierda) - Number(derecha)
+              : String(izquierda).localeCompare(String(derecha));
+
+          return ascending ? comparacion : -comparacion;
+        }
+        return 0;
+      });
+
+      return Promise.resolve({ data: ordenado, error: null });
     },
   };
 
   return query;
 }
 
-const { getTransactions, getAvailableMonths, buildSummary, buildCategoryTotals } = await import(
+const { getTransactions, getAvailableMonths, buildSummary, buildGroupedTotals } = await import(
   "./transactions"
 );
 
@@ -183,11 +208,12 @@ describe("indicadores y totales tras eliminar", () => {
     expect(summary.balance).toBe(-100);
   });
 
-  it("un eliminado no suma en el resumen por categoría", async () => {
-    const totals = buildCategoryTotals(await getTransactions());
+  it("un eliminado no suma en la tabla de totales", async () => {
+    const totals = buildGroupedTotals(await getTransactions());
 
     expect(totals).toHaveLength(1);
-    expect(totals[0]).toMatchObject({ category: "Supermercado", total: 100, count: 1 });
+    expect(totals[0]).toMatchObject({ label: "GASTOS VARIABLES", total: 100, count: 1 });
+    expect(totals[0].children[0]).toMatchObject({ label: "Alimentación", total: 100 });
   });
 
   it("al restaurarlo vuelve a contar", async () => {
@@ -225,5 +251,77 @@ describe("getAvailableMonths", () => {
 
     expect(months).toContain("2026-03");
     expect(months).not.toContain("2026-08");
+  });
+});
+
+describe("orden por monto", () => {
+  beforeEach(() => {
+    state.rows = [
+      row({ id: "1", merchant: "GRANDE", amount: "156.80", transaction_at: "2026-08-01T10:00:00-05:00" }),
+      row({ id: "2", merchant: "MEDIANO", amount: "80.00", transaction_at: "2026-08-02T10:00:00-05:00" }),
+      row({ id: "3", merchant: "OTRO", amount: "74.00", transaction_at: "2026-08-03T10:00:00-05:00" }),
+      row({ id: "4", merchant: "CHICO-VIEJO", amount: "3.90", transaction_at: "2026-08-04T10:00:00-05:00" }),
+      row({ id: "5", merchant: "CHICO-NUEVO", amount: "3.90", transaction_at: "2026-08-05T10:00:00-05:00" }),
+    ];
+  });
+
+  it("por defecto, lo más reciente primero", async () => {
+    const orden = (await getTransactions()).map((t) => t.merchant);
+    expect(orden[0]).toBe("CHICO-NUEVO");
+    expect(orden.at(-1)).toBe("GRANDE");
+  });
+
+  it("«monto-desc» compara números, no el texto formateado", async () => {
+    // Como cadenas, "80.00" iría antes que "156.80" y "3.90" antes que "74.00".
+    const orden = await getTransactions({ sort: "monto-desc" });
+
+    expect(orden.map((t) => t.amount)).toEqual([156.8, 80, 74, 3.9, 3.9]);
+  });
+
+  it("«monto-asc» invierte", async () => {
+    const orden = await getTransactions({ sort: "monto-asc" });
+    expect(orden.map((t) => t.amount)).toEqual([3.9, 3.9, 74, 80, 156.8]);
+  });
+
+  it("a igual monto, primero el más reciente", async () => {
+    // Los dos de 3.90 tienen que salir en un orden definido, no arbitrario.
+    for (const sort of ["monto-desc", "monto-asc"] as const) {
+      const empatados = (await getTransactions({ sort }))
+        .filter((t) => t.amount === 3.9)
+        .map((t) => t.merchant);
+
+      expect(empatados).toEqual(["CHICO-NUEVO", "CHICO-VIEJO"]);
+    }
+  });
+
+  it("no pierde decimales", async () => {
+    const orden = await getTransactions({ sort: "monto-desc" });
+    expect(orden.map((t) => t.amount)).toContain(156.8);
+    expect(orden.map((t) => t.amount)).toContain(3.9);
+  });
+
+  it("«antiguos» ordena al revés por fecha", async () => {
+    const orden = (await getTransactions({ sort: "antiguos" })).map((t) => t.merchant);
+    expect(orden[0]).toBe("GRANDE");
+    expect(orden.at(-1)).toBe("CHICO-NUEVO");
+  });
+
+  it("primero se filtra y después se ordena", async () => {
+    const orden = await getTransactions({ sort: "monto-desc", category: "Supermercado" });
+
+    // Todas las filas de prueba son Supermercado, así que el filtro no quita
+    // ninguna; lo que se comprueba es que el orden sobrevive al filtrado.
+    expect(orden).toHaveLength(5);
+    expect(orden[0].amount).toBe(156.8);
+  });
+
+  it("un eliminado sigue fuera, se ordene como se ordene", async () => {
+    state.rows = [
+      ...state.rows,
+      row({ id: "6", merchant: "BORRADO", amount: "9999.00", activo: false, eliminado_at: "x" }),
+    ];
+
+    const orden = await getTransactions({ sort: "monto-desc" });
+    expect(orden.map((t) => t.merchant)).not.toContain("BORRADO");
   });
 });

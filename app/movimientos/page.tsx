@@ -3,7 +3,9 @@ import { redirect } from "next/navigation";
 import { hasValidSession } from "@/lib/auth/guard";
 import { FiltersBar } from "@/components/FiltersBar";
 import { MovementDialog } from "@/components/MovementDialog";
+import { MovementSortControl } from "@/components/MovementSortControl";
 import { SetupNotice } from "@/components/SetupNotice";
+import { PageContainer } from "@/components/PageContainer";
 import {
   buildSummary,
   getAvailableMonths,
@@ -13,6 +15,11 @@ import {
 } from "@/lib/transactions";
 import { formatCurrency, formatMonthLabel } from "@/lib/format";
 import { describeError } from "@/lib/logger";
+import {
+  DEFAULT_MOVEMENT_SORT,
+  MOVEMENT_SORTS,
+  type MovementSort,
+} from "@/lib/movementSort";
 import type { Summary, Transaction } from "@/types/transaction";
 
 /**
@@ -28,6 +35,35 @@ import type { Summary, Transaction } from "@/types/transaction";
  */
 
 export const dynamic = "force-dynamic";
+
+/**
+ * A dónde lleva cada opción de orden, con los filtros actuales intactos.
+ *
+ * El orden por defecto no añade parámetro: la URL limpia es la lista de siempre,
+ * y así compartir un enlace sin `orden` significa exactamente eso.
+ */
+function buildSortHrefs(
+  searchParams: Record<string, string | string[] | undefined>,
+): Record<MovementSort, string> {
+  const base = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(searchParams)) {
+    if (key === "orden" || value === undefined) continue;
+    for (const item of Array.isArray(value) ? value : [value]) base.append(key, item);
+  }
+
+  const hrefs = {} as Record<MovementSort, string>;
+
+  for (const option of MOVEMENT_SORTS) {
+    const params = new URLSearchParams(base);
+    if (option !== DEFAULT_MOVEMENT_SORT) params.set("orden", option);
+
+    const query = params.toString();
+    hrefs[option] = query ? `/movimientos?${query}` : "/movimientos";
+  }
+
+  return hrefs;
+}
 
 /**
  * Qué período se está viendo.
@@ -55,8 +91,13 @@ export default async function MovimientosPage(props: PageProps<"/movimientos">) 
 
   const searchParams = await props.searchParams;
   const parsed = parseFilters(searchParams);
-  const { raw, mode } = parsed;
+  const { raw, mode, sort } = parsed;
   const filters = withDefaultMonth(parsed);
+
+  // Un enlace por cada orden, construido sobre los parámetros ACTUALES: cambiar
+  // el orden no puede perder los filtros puestos. Y como el orden es un
+  // parámetro más, «Limpiar» —que apunta a la ruta pelada— lo quita solo.
+  const sortHrefs = buildSortHrefs(searchParams);
 
   let transactions: Transaction[] = [];
   let months: string[] = [];
@@ -71,7 +112,7 @@ export default async function MovimientosPage(props: PageProps<"/movimientos">) 
   }
 
   return (
-    <div className="space-y-6">
+    <PageContainer wide className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Movimientos</h1>
@@ -98,10 +139,19 @@ export default async function MovimientosPage(props: PageProps<"/movimientos">) 
             months={months}
             values={{ ...raw, month: raw.month ?? filters.month }}
             mode={mode}
+            // El orden por defecto no viaja: la URL limpia ya lo significa.
+            sort={sort === DEFAULT_MOVEMENT_SORT ? undefined : sort}
           />
-          <TransactionsTable transactions={transactions} />
+
+          {/* Solo en móvil: en escritorio ordena la cabecera «Monto». */}
+          <MovementSortControl value={sort} hrefs={sortHrefs} />
+
+          <TransactionsTable
+            transactions={transactions}
+            amountSort={{ current: sort, hrefs: sortHrefs }}
+          />
         </>
       )}
-    </div>
+    </PageContainer>
   );
 }

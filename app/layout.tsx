@@ -20,11 +20,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         {/* Se oculta sola en /login: allí no hay dónde navegar ni de dónde salir. */}
         <AppHeader />
 
-        {/* `px-3` en movil: el contenido gana 8 px a cada lado sin pegarse al
-            borde. `max-w-5xl` solo entra en juego a partir de esa anchura. */}
-        <main className="mx-auto w-full max-w-5xl flex-1 px-3 py-5 sm:px-6 sm:py-8">
-          {children}
-        </main>
+        {/* Aquí solo va el margen lateral; el ANCHO lo decide cada página con
+            `PageContainer`, porque un panel de tarjetas y una tabla de doce
+            columnas no quieren el mismo. Tener el tope aquí era lo que obligaba
+            a la tabla de Movimientos a desplazarse en horizontal. */}
+        <main className="w-full flex-1 px-3 py-5 sm:px-6 sm:py-8">{children}</main>
       </body>
     </html>
   );
