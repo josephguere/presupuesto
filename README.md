@@ -452,6 +452,7 @@ entornos *Production*, *Preview* y *Development*:
 | `GMAIL_INGEST_KEY` | La misma clave que en Apps Script |
 | `AUTH_PIN_HASH` | Lo que imprime `npm run auth:hash` |
 | `AUTH_SESSION_SECRET` | 64 caracteres hexadecimales aleatorios |
+| `GEMINI_API_KEY` | Opcional. De <https://aistudio.google.com/apikey> |
 
 Las dos de `AUTH_` van marcadas como **Sensitive** si Vercel lo ofrece: así el
 valor deja de poder leerse desde el panel una vez guardado.
@@ -893,6 +894,67 @@ en el grupo INGRESOS es siempre un error de clasificación.
 3. Añadir la frase a `BCP_SEARCH_BASE` **y** a `BCP_BODY_MARKERS` en
    `google-apps-script/gmail-bcp.gs`. Si falta, el correo nunca sale de Gmail.
 4. Una muestra en `samples/` y sus tests.
+
+---
+
+## Sugerencia de categoría
+
+Al abrir **Editar** en un movimiento, la aplicación propone una categoría. Solo
+propone: no escribe nada hasta que pulsas «Guardar cambios».
+
+```
+1. Tu propio historial     gratis, instantáneo
+2. Gemini                  solo si el historial no alcanza
+3. Nada                    eliges a mano, como siempre
+```
+
+El historial va primero por una razón que no es el coste: **nadie conoce tus
+gastos mejor que tú**. Si ya categorizaste ese comercio, esa es la respuesta.
+
+### Cómo se reconoce un comercio
+
+El banco escribe el mismo sitio de muchas formas, así que hay **dos claves**:
+
+| | «DLC*PedidosYa KFC Qhatu P» |
+|---|---|
+| Canónica | `PEDIDOSYA KFC QHATU P` |
+| Familia | `PEDIDOSYA` |
+
+Se buscan en cascada y **la canónica manda**. Si «Yape Movilidad» tiene su propio
+historial decide él, en vez de diluirse en el cubo de todo lo que empieza por
+YAPE, que está repartido entre cuatro categorías.
+
+La pasarela de pago (`DLC*`, `EBN*`, `IZI*`, `EPC*`) se elimina y **nunca**
+agrupa: es el procesador, no el negocio. Si agrupara, «DLC*Temucom» y
+«DLC*UBER RIDES» caerían en el mismo saco.
+
+Una coincidencia exacta decide con una sola fila —es tu decisión, no una
+inferencia—, pero una familia tiene que estar acreditada: dos comercios
+distintos, tres movimientos y 80 % de acuerdo. Empate o conflicto pasan a Gemini.
+
+### Qué se le envía a Gemini, y qué no
+
+Solo comercio, tipo, comentario depurado, importe y hasta diez ejemplos de cómo
+clasificas tú. Nunca tarjeta, número de operación ni fechas.
+
+Depurar el comentario **no es opcional**: el que rellena la ingesta contiene
+cosas como `PAGO CON NUMERO TELEFONO · 979336700`. Omitir columnas no habría
+bastado; el teléfono va dentro de un campo que sí queremos enviar.
+
+**La defensa contra la inyección no es el prompt.** El nombre del comercio viene
+de un correo, es decir, de fuera. La respuesta del modelo está restringida por
+`responseSchema` a las categorías del catálogo, se revalida al recibirla, y el
+grupo lo deriva el servidor. Lo peor que puede lograr una inyección es una
+categoría válida pero equivocada, que ves antes de guardar.
+
+### Sin clave sigue funcionando
+
+Sin `GEMINI_API_KEY` no se llama a nada y la sugerencia usa solo tu historial. Si
+Gemini falla, agota cuota o tarda más de 6 segundos, la respuesta es «sin
+sugerencia» y eliges a mano. Nunca bloquea la edición.
+
+> El modelo por defecto es `gemini-3.5-flash-lite`. El `2.5-flash-lite` ya no se
+> sirve a claves nuevas. Se puede cambiar con `GEMINI_MODEL` sin desplegar.
 
 ---
 

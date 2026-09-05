@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { createMovement, updateMovement } from "@/app/actions";
 import { NO_CATEGORY, getGroupForCategory, getSummaryForCategory } from "@/lib/categories";
 import { CategoryCombobox, FORM_CATEGORY_OPTIONS } from "./CategoryCombobox";
 import { DEFAULT_OPERATION_TYPE, OPERATION_TYPES } from "@/lib/operationTypes";
 import { toDateInputValue, toTimeInputValue } from "@/lib/format";
+import { requestSuggestion, type CategorySuggestion } from "@/lib/suggest/client";
 import type { Transaction } from "@/types/transaction";
 
 /**
@@ -52,7 +53,21 @@ export function MovementForm({
   // Único estado del formulario: el resto de campos son no controlados. La
   // categoría lo es porque el grupo tiene que repintarse en cuanto cambie.
   const [category, setCategory] = useState<string>(transaction?.category ?? NO_CATEGORY);
+  const [suggestion, setSuggestion] = useState<CategorySuggestion | null>(null);
+  // Nace analizando cuando hay algo que analizar, en vez de encenderlo dentro
+  // del efecto: así el usuario ve «Analizando categoría…» desde el primer
+  // fotograma, sin un parpadeo de estado vacío.
+  const [analyzing, setAnalyzing] = useState(Boolean(transaction));
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  /**
+   * ¿Ha tocado el usuario la categoría?
+   *
+   * No vale comparar con el valor inicial: el usuario puede volver a elegir
+   * exactamente la misma categoría, y eso sigue siendo una decisión suya que no
+   * se debe pisar. Solo lo sabe quien estuvo delante del `onChange`.
+   */
+  const touched = useRef(false);
   const [message, setMessage] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -61,6 +76,42 @@ export function MovementForm({
   const elegida = category === NO_CATEGORY ? null : category;
   const summary = getSummaryForCategory(elegida);
   const group = getGroupForCategory(elegida);
+
+  /**
+   * Pide la sugerencia al abrir.
+   *
+   * Las dependencias vacías bastan porque `MovementDialog` monta este formulario
+   * solo cuando el modal está abierto y lo desmonta al cerrar: el ciclo de vida
+   * del componente ES la apertura. La deduplicación del doble montaje de
+   * StrictMode y la cancelación viven en `requestSuggestion`.
+   *
+   * Solo al EDITAR: al crear un movimiento todavía no hay comercio que analizar.
+   */
+  useEffect(() => {
+    if (!transaction) return;
+
+    const cancel = requestSuggestion(transaction.id, (result) => {
+      setAnalyzing(false);
+      setSuggestion(result);
+
+      // Se autoaplica solo si el movimiento no tenía categoría Y el usuario no
+      // ha elegido nada mientras cargaba. En cualquier otro caso se muestra
+      // como propuesta y decide él.
+      if (result?.category && !touched.current && !transaction.category) {
+        setCategory(result.category);
+      }
+    });
+
+    return cancel;
+    // Se dispara una vez por apertura, a propósito.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  /** Todo cambio de categoría pasa por aquí: un solo embudo, un solo sitio. */
+  function chooseCategory(value: string, byUser: boolean) {
+    if (byUser) touched.current = true;
+    setCategory(value);
+  }
 
   function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -137,7 +188,17 @@ export function MovementForm({
             name="category"
             options={FORM_CATEGORY_OPTIONS}
             defaultValue={category}
-            onChange={setCategory}
+            // Controlado: sin esto, aplicar una sugerencia movería el Resumen y
+            // el Grupo pero dejaría el combo y el campo enviado con el valor
+            // viejo.
+            value={category}
+            onChange={(value) => chooseCategory(value, true)}
+          />
+          <SuggestionHint
+            analyzing={analyzing}
+            suggestion={suggestion}
+            current={category}
+            onUse={(value) => chooseCategory(value, false)}
           />
         </Field>
 
@@ -263,6 +324,49 @@ export function MovementForm({
         </button>
       </div>
     </form>
+  );
+}
+
+/**
+ * La línea de sugerencia, bajo el selector.
+ *
+ * Nunca bloquea: si la sugerencia falla o no llega, esto desaparece y el
+ * formulario funciona como siempre. Un error aquí no es un error del usuario, y
+ * por eso no se pinta en rojo ni lleva `role="alert"`.
+ */
+function SuggestionHint({
+  analyzing,
+  suggestion,
+  current,
+  onUse,
+}: {
+  analyzing: boolean;
+  suggestion: CategorySuggestion | null;
+  current: string;
+  onUse: (value: string) => void;
+}) {
+  if (analyzing) {
+    return (
+      <span className="text-xs text-zinc-500 dark:text-zinc-400">Analizando categoría…</span>
+    );
+  }
+
+  const propuesta = suggestion?.category;
+
+  // Sin propuesta, o ya es la que está puesta: no hay nada que ofrecer.
+  if (!propuesta || propuesta === current) return null;
+
+  return (
+    <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
+      <span title={suggestion?.reason ?? undefined}>✨ Sugerencia: {propuesta}</span>
+      <button
+        type="button"
+        onClick={() => onUse(propuesta)}
+        className="font-medium text-blue-600 hover:underline dark:text-blue-400"
+      >
+        Usar sugerencia
+      </button>
+    </span>
   );
 }
 

@@ -54,6 +54,7 @@ export function CategoryCombobox({
   name,
   options,
   defaultValue,
+  value,
   onChange,
   placeholder = "Escribe para buscar...",
   ariaLabel = "Categoría",
@@ -63,6 +64,15 @@ export function CategoryCombobox({
   name: string;
   options: CategoryOption[];
   defaultValue?: string;
+  /**
+   * Valor controlado desde fuera. Cuando se pasa, manda sobre la elección
+   * interna.
+   *
+   * Existe para que el formulario pueda aplicar una sugerencia automática: sin
+   * esto, mover la categoría desde el padre repintaría el Resumen y el Grupo
+   * pero dejaría el combo —y el campo oculto que se envía— con el valor viejo.
+   */
+  value?: string;
   /** Se llama al elegir; lo usa el formulario para recalcular el Grupo. */
   onChange?: (value: string) => void;
   placeholder?: string;
@@ -75,7 +85,12 @@ export function CategoryCombobox({
 
   const initial = options.find((option) => option.value === defaultValue) ?? options[0];
 
-  const [selected, setSelected] = useState<CategoryOption>(initial);
+  const [internal, setInternal] = useState<CategoryOption>(initial);
+
+  // Controlado si llega `value`; si no, se gobierna solo. Que la opción se
+  // busque en cada render es lo que hace que el padre pueda cambiarla.
+  const controlled = options.find((option) => option.value === value);
+  const selected = controlled ?? internal;
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(0);
@@ -117,7 +132,7 @@ export function CategoryCombobox({
   }
 
   function choose(option: CategoryOption) {
-    setSelected(option);
+    setInternal(option);
     onChange?.(option.value);
     close();
     inputRef.current?.blur();
