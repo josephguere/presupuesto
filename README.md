@@ -86,9 +86,10 @@ presupuesto/
 │   ├── parsers/
 │   │   ├── types.ts                   Contrato común de los parsers
 │   │   ├── normalize.ts               Texto, montos y fechas en español
-│   │   ├── bcpConsumo.ts              Parser de consumos BCP (débito y crédito)
-│   │   ├── bcpConsumo.test.ts         49 tests del parser
-│   │   └── bcp.ts                     Punto de entrada del banco BCP
+│   │   ├── bcpConsumo.ts              Consumos con tarjeta (débito y crédito)
+│   │   ├── bcpPagoServicio.ts         Pagos de servicios (luz, telefonía...)
+│   │   ├── bcpTransferencia.ts        Transferencias a otros bancos
+│   │   └── bcp.ts                     Punto de entrada: despacha al parser
 │   └── supabase/
 │       ├── client.ts                  Fábrica compartida (sin secretos)
 │       └── server.ts                  Cliente service-role, solo servidor
@@ -107,7 +108,10 @@ presupuesto/
     ├── bcp-consumo.txt                formato con dos puntos
     ├── bcp-consumo-credito.txt        formato real del BCP
     ├── bcp-consumo-plaza-vea.txt      millares y hora AM
-    └── bcp-consumo-html.txt           HTML→texto con caracteres invisibles
+    ├── bcp-consumo-html.txt           HTML→texto con caracteres invisibles
+    ├── bcp-pago-servicio.txt          pago de recibo (tabuladores)
+    ├── bcp-pago-servicio-entel.txt    segundo pago de la misma compañía
+    └── bcp-transferencia.txt          transferencia con DOS tarjetas
 ```
 
 ### Extensibilidad
@@ -831,6 +835,61 @@ Sin `--confirm` nunca borra nada. Y siempre lista antes lo que va a borrar.
 Si no, recuerda esos correos como ya enviados y no los reenviará.
 
 ---
+
+---
+
+## Qué correos del BCP se leen
+
+Tres tipos, cada uno con su parser. `lib/parsers/bcp.ts` decide cuál usar según
+la frase que aparece en el cuerpo; ninguna se solapa con otra.
+
+| Correo | Frase que lo identifica | Movimiento | Importe |
+|---|---|---|---|
+| Consumo con tarjeta | «Realizaste un consumo» | `Empresa` | `Total del consumo` |
+| Pago de servicios | «Pago de servicios» | `Empresa` | `Monto total` |
+| Transferencia | «Realizaste una transferencia» | `Transferencia a <banco>` | `Total cobrado` |
+
+Un parser por tipo, y no ramas dentro de uno, porque cada formato tiene sus
+etiquetas y su propia idea de cuál es «el importe». Mezclarlos haría que un
+cambio del banco en un formato pudiera romper los otros dos.
+
+### Dos decisiones que no son obvias
+
+**El importe del pago de servicios sale de `Monto total`, no de `Importe`.** Ese
+último pertenece al bloque «Nº 1» de un recibo concreto: al pagar dos de una vez
+aparece un «Nº 2» con el suyo, y leer esa etiqueta daría solo el primero.
+
+**La transferencia trae DOS tarjetas.** `**** 7842` es la del destinatario, bajo
+«Enviado a», y `**** 4035` la tuya, bajo «Desde». Se lee anclada a «Desde»;
+buscar «el primer `****` del cuerpo» guardaría la cuenta ajena como si fuera la
+tuya. Hay una prueba que lo fija.
+
+### El comentario distingue lo que el nombre no
+
+Dos recibos de la misma compañía se verían idénticos salvo por el importe, así
+que el parser rellena el comentario con lo que los separa:
+
+```
+ENTEL PERU S.A.   S/ 74.90   PAGO CON NUMERO TELEFONO · 979336700
+ENTEL PERU S.A.   S/ 59.90   PAGO CON NUMERO TELEFONO · 923703951
+```
+
+En las transferencias va el destinatario. Es un comentario normal: editable y
+borrable como cualquier otro.
+
+### Solo salidas
+
+El BCP no notifica el dinero que entra, así que **todo correo ingerido es dinero
+que sale**. No hay que deducir ningún signo, y un movimiento de origen `EMAIL`
+en el grupo INGRESOS es siempre un error de clasificación.
+
+### Añadir un tipo nuevo
+
+1. Un parser en `lib/parsers/`, con su `is…Email()` y su `parse…Email()`.
+2. Registrarlo en el array `PARSERS` de `lib/parsers/bcp.ts`.
+3. Añadir la frase a `BCP_SEARCH_BASE` **y** a `BCP_BODY_MARKERS` en
+   `google-apps-script/gmail-bcp.gs`. Si falta, el correo nunca sale de Gmail.
+4. Una muestra en `samples/` y sus tests.
 
 ---
 

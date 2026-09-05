@@ -50,3 +50,6 @@ samples/*
 !samples/bcp-consumo-credito.txt
 !samples/bcp-consumo-plaza-vea.txt
 !samples/bcp-consumo-html.txt
+!samples/bcp-pago-servicio.txt
+!samples/bcp-pago-servicio-entel.txt
+!samples/bcp-transferencia.txt

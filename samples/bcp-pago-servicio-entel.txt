@@ -1,0 +1,19 @@
+*Hola NOMBRE APELLIDO,*
+
+¡Tu operación se realizó con éxito!
+
+Operación realizada:
+
+*Pago de servicios*
+
+Número de operación:
+
+*01236185*
+
+Fecha y hora: *Jueves, 03 Septiembre 2026 - 10:19 A. M.* Empresa: *ENTEL PERU S.A.* Servicio: *PAGO CON NUMERO TELEFONO* Titular del servicio: *OTRO NOMBRE APELLIDO* Código de usuario: *900000001* Comisión: ** Cuenta de origen: *Tarjeta de crédito
+**** 2437
+NOMBRE APELLIDO* Vigencia: ** Valor venta: ** IGV: ** Subtotal: ** Monto total: *S/ 74.90* Tipo de cambio: ** Monto transferido al cambio: **
+
+Nº 1 Nº 2 Doc. pago: *S002231762472* ** Vencimiento: *05/09/2026* ** Importe: *S/ 74.90* ** Cargo fijo: *S/ 0.00* ** Mora: *S/ 0.00* **
+
+Nº 3 Nº 4 Doc. pago: ** ** Vencimiento: ** ** Importe: ** ** Cargo fijo: ** ** Mora: ** **

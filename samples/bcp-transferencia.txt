@@ -1,0 +1,35 @@
+Hola *Nombre Apellido,*
+
+Realizaste una transferencia de *S/ 50.00* desde tu *Cuenta corriente.*
+
+A continuación, te enviamos los datos de tu operación.
+
+*Montos*
+
+Monto enviado *S/ 50.00*
+Comisión *S/ 0.00*
+*Total cobrado* *S/ 50.00*
+
+*Datos de la operación*
+
+Operación realizada *Transferencia a otros bancos*
+Fecha y hora *02 de Septiembre de 2026 - 11:11 PM*
+Enviado a *Otro Nombre Apellido S.*
+**** 7842
+Banco destino *Interbank*
+Moneda *Soles*
+Tipo de envío *Inmediato*
+Desde *Cuenta corriente*
+**** 4035
+Mensaje
+Canal *Banca Móvil BCP*
+Número de operación *06042517* <#>
+
+*¿No reconoces esta operación?*
+
+Comunícate inmediatamente con nosotros al
+
+(01) 311-9898 anexo *911 para ayudarte a verificarla.
+
+*Juntos somos más seguros*
+El BCP nunca te solicitará datos confidenciales por correo, tales como tu clave secreta de cajero de 4 dígitos.

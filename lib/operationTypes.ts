@@ -1,9 +1,9 @@
 /**
  * Tipos de operación.
  *
- * Los dos primeros son EXACTAMENTE los que produce el parser al leer la etiqueta
- * «Operación realizada» de los correos del BCP; no se han inventado. El resto
- * cubre lo que se registra a mano y el banco no notifica por correo.
+ * Los cuatro primeros son EXACTAMENTE los que produce el parser al leer la
+ * etiqueta «Operación realizada» de los correos del BCP; no se han inventado. El
+ * resto cubre lo que se registra a mano y el banco no notifica por correo.
  *
  * El campo sigue siendo `text` libre en la base de datos, porque el parser lee
  * lo que diga el correo y no queremos que un texto nuevo del banco rompa la
@@ -12,10 +12,14 @@
 export const OPERATION_TYPES = [
   "Consumo Tarjeta de Crédito",
   "Consumo Tarjeta de Débito",
+  // Estos dos están escritos EXACTAMENTE como los manda el banco, para que al
+  // editar un movimiento ingerido el desplegable muestre su valor en lugar de
+  // añadir una opción suelta casi idéntica.
+  "Pago de servicios",
+  "Transferencia a otros bancos",
   "Transferencia",
   "Depósito",
   "Retiro",
-  "Pago de servicio",
   "Otro",
 ] as const;
 

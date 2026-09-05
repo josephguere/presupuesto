@@ -11,6 +11,14 @@ export interface ParsedTransaction {
   merchant: string;
   cardLast4: string | null;
   operationNumber: string;
+  /**
+   * Detalle que el correo trae y no cabe en `merchant`.
+   *
+   * Lo usan los pagos de servicio —dos recibos de la misma compañía solo se
+   * distinguen por el servicio y el código de usuario— y las transferencias,
+   * donde aquí va el destinatario. Los consumos no lo rellenan.
+   */
+  comment?: string | null;
   source: TransactionSource;
 }
 

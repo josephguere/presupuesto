@@ -352,7 +352,9 @@ async function upsertTransaction(
       operation_number: transaction.operationNumber,
       // Sin categoria: la asigna el usuario. Nada se clasifica solo.
       category: null,
-      comment: null,
+      // Detalle que trae el propio correo (servicio pagado, destinatario). Es
+      // editable como cualquier otro comentario.
+      comment: transaction.comment ?? null,
       origin: "EMAIL",
       original_amount: money.originalAmount,
       original_currency: money.originalCurrency,

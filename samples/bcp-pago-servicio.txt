@@ -1,0 +1,23 @@
+*Hola NOMBRE APELLIDO,*
+
+¡Tu operación se realizó con éxito!
+
+Operación realizada:
+
+*Pago de servicios*
+
+Número de operación:
+
+*01208745*
+
+Fecha y hora: *Jueves, 03 Septiembre 2026 - 10:18 A. M.* Empresa: *ELECTRO UCAYALI* Servicio: *CONSUMO* Titular del servicio: *OTRO NOMBRE , APELLIDO* Código de usuario: *148375* Comisión: ** Cuenta de origen: *Tarjeta de crédito
+**** 2437
+NOMBRE APELLIDO* Vigencia: ** Valor venta: ** IGV: ** Subtotal: ** Monto total: *S/ 174.20* Tipo de cambio: ** Monto transferido al cambio: **
+
+Nº 1 Nº 2 Doc. pago: *000000000000000000202609030849* ** Vencimiento: *23/08/2026* ** Importe: *S/ 174.20* ** Cargo fijo: *S/ 0.00* ** Mora: *S/ 0.00* **
+
+Nº 3 Nº 4 Doc. pago: ** ** Vencimiento: ** ** Importe: ** ** Cargo fijo: ** ** Mora: ** **
+
+Documento autorizado para fines tributarios. Base Legal: Documento autorizado Art. 4 num. 6.1. Inc.d R.S.007-99/SUNAT. Número de atención al cliente: 104 opción 2.
+
+Si deseas verificar la operación, puedes hacerlo en nuestra Banca por Internet VíaBCP, en nuestro servicio de Banca por Teléfono (01) 311-9898 o en cualquiera de nuestras oficinas a nivel nacional.

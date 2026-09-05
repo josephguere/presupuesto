@@ -49,10 +49,16 @@ var REQUIRED_PROPERTIES = ['API_URL', 'INGEST_KEY'];
  * Filtra por remitente y por contenido, no por asunto: todavía no conocemos el
  * asunto exacto de todos los correos del BCP. Se puede sobrescribir con la
  * propiedad opcional GMAIL_QUERY sin tocar el código.
+ *
+ * Las llaves son el OR de Gmail. Cada frase corresponde a un tipo de correo que
+ * la API sabe leer: consumo con tarjeta, pago de servicios y transferencia. Si
+ * añades un parser nuevo, esta lista y `looksLikeBcpEmail_` tienen que crecer a
+ * la vez, o el correo no llegará nunca a salir de Gmail.
  */
 var BCP_SEARCH_BASE =
   'from:notificaciones@notificacionesbcp.com.pe ' +
-  '"Realizaste un consumo"';
+  '{"Realizaste un consumo" "Realizaste una compra" ' +
+  '"Pago de servicios" "Realizaste una transferencia"}';
 
 var DEFAULT_GMAIL_QUERY = BCP_SEARCH_BASE + ' newer_than:2d';
 
@@ -184,6 +190,11 @@ function backfillBcpEmails() {
 
     if (threads.length === 0) continue;
 
+    // Foto del contador antes de este dia, para poder informar SU cifra y no el
+    // acumulado: leer "Ya enviados antes: 10" en la ultima linea y creer que son
+    // los de ese dia lleva a conclusiones equivocadas.
+    var before = { sent: state.sent, skipped: state.skipped, failed: state.failed };
+
     if (threads.length >= MAX_THREADS_PER_RUN) {
       // Un solo dia con mas hilos que el tope: improbable, pero avisarlo es
       // mejor que dejar un hueco silencioso en los datos.
@@ -199,11 +210,18 @@ function backfillBcpEmails() {
     // queda anotado y la siguiente pasada no lo repite.
     flushSentIds_(state);
 
-    Logger.log(day.label + ' -> ' + describeRun_(state));
+    Logger.log(day.label + ' -> ' + describeDelta_(before, state));
   }
 
   Logger.log('----------------------------------------');
-  Logger.log('Backfill terminado. ' + describeRun_(state));
+  Logger.log('Backfill terminado, TOTAL del rango. ' + describeRun_(state));
+
+  if (state.sent === 0 && state.skipped > 0) {
+    Logger.log(
+      'No se envio nada porque el script ya tenia esos correos en su memoria. ' +
+      'Si acabas de corregir el parser, ejecuta forgetSentIds y repite.'
+    );
+  }
 
   if (pending) {
     Logger.log(
@@ -244,7 +262,7 @@ function previewBackfill() {
     for (var t = 0; t < threads.length; t++) {
       var messages = threads[t].getMessages();
       for (var m = 0; m < messages.length; m++) {
-        if (!looksLikeBcpConsumption_(messages[m])) continue;
+        if (!looksLikeBcpEmail_(messages[m])) continue;
         casan++;
         if (!alreadySent[messages[m].getId()]) nuevos++;
       }
@@ -378,7 +396,7 @@ function processThreads_(threads, config, label, state) {
       }
 
       // Un hilo puede mezclar correos que casan con la busqueda y otros que no.
-      if (!looksLikeBcpConsumption_(message)) continue;
+      if (!looksLikeBcpEmail_(message)) continue;
 
       if (sendMessage_(message, thread, config)) {
         state.sent++;
@@ -402,6 +420,15 @@ function flushSentIds_(state) {
   if (state.pending === 0) return;
   saveSentIds_(state.sentIds);
   state.pending = 0;
+}
+
+/** Lo ocurrido en un solo dia: el estado de ahora menos el de antes. */
+function describeDelta_(before, state) {
+  return describeRun_({
+    sent: state.sent - before.sent,
+    skipped: state.skipped - before.skipped,
+    failed: state.failed - before.failed
+  });
 }
 
 function describeRun_(state) {
@@ -507,17 +534,37 @@ function buildHeaders_(config) {
 }
 
 /**
+ * Frases que identifican un correo que la API sabe interpretar.
+ *
+ * Sin tildes ni mayúsculas, porque así se comparan abajo. Deben coincidir con
+ * los marcadores de los parsers de `lib/parsers/`: si aquí falta uno, el correo
+ * se descarta antes de salir de Gmail; si sobra, la API responde PARSE_ERROR y
+ * el correo queda guardado igualmente para reprocesarlo.
+ */
+var BCP_BODY_MARKERS = [
+  'realizaste un consumo',
+  'realizaste una compra',
+  'pago de servicios',
+  'realizaste una transferencia'
+];
+
+/**
  * Segundo filtro, ya con el mensaje en la mano.
  *
  * La búsqueda de Gmail trabaja por hilos, así que puede devolver un hilo entero
  * por culpa de un solo mensaje. Esto comprueba mensaje a mensaje.
  */
-function looksLikeBcpConsumption_(message) {
+function looksLikeBcpEmail_(message) {
   var from = String(message.getFrom()).toLowerCase();
   if (from.indexOf('notificacionesbcp.com.pe') === -1) return false;
 
   var body = String(message.getPlainBody()).toLowerCase();
-  return body.indexOf('realizaste un consumo') !== -1;
+
+  for (var i = 0; i < BCP_BODY_MARKERS.length; i++) {
+    if (body.indexOf(BCP_BODY_MARKERS[i]) !== -1) return true;
+  }
+
+  return false;
 }
 
 /* ========================================================================== */
@@ -659,7 +706,7 @@ function previewSearch() {
       Logger.log(
         '- [' + message.getDate() + '] ' + message.getFrom() +
         ' | ' + message.getSubject() +
-        ' | casa: ' + looksLikeBcpConsumption_(message)
+        ' | casa: ' + looksLikeBcpEmail_(message)
       );
     }
   }

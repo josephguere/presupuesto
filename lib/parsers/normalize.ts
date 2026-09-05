@@ -147,6 +147,104 @@ export function findValueByLabel(
 }
 
 /**
+ * Escapa un texto para meterlo en un regex y lo hace tolerante a las tildes.
+ *
+ * El banco escribe «Código de usuario» y «Comisión», pero conviene poder
+ * buscarlos sin depender de que la tilde sobreviva a la conversión a texto
+ * plano. Cada vocal pasa a admitir su versión acentuada.
+ */
+function toLabelPattern(label: string): string {
+  const acentos: Record<string, string> = {
+    a: "aá",
+    e: "eé",
+    i: "ií",
+    o: "oó",
+    u: "uúü",
+    n: "nñ",
+  };
+
+  return deaccent(label)
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/[aeioun]/g, (letra) => `[${acentos[letra]}]`);
+}
+
+/**
+ * Busca una etiqueta EN CUALQUIER PARTE del texto y devuelve su valor en negrita.
+ *
+ * `findValueByLabel` solo mira el principio de cada línea, y eso no alcanza para
+ * los pagos de servicio: el banco mete media docena de campos en un solo
+ * renglón.
+ *
+ *     Fecha y hora: *Jueves, 03 Septiembre 2026 - 10:18 A. M.* Empresa:
+ *     *ELECTRO UCAYALI* Servicio: *CONSUMO* Código de usuario: *148375*
+ *
+ * La precisión la da el ASTERISCO: el valor tiene que venir inmediatamente
+ * después de la etiqueta y estar en negrita. Sin esa exigencia, buscar texto
+ * suelto en medio de un párrafo devolvería cualquier cosa.
+ *
+ * Y la etiqueta tiene que empezar tras un salto de línea o tras el asterisco que
+ * cierra el valor anterior. Es lo que impide que «Servicio» se enganche dentro
+ * de «Titular del servicio», que está justo al lado y contiene otro nombre.
+ *
+ * Un valor vacío se escribe `**` y aquí devuelve `null`, que es lo que es.
+ */
+export function findEmphasizedValue(body: NormalizedBody, labels: string[]): string | null {
+  for (const label of labels) {
+    const value = body.text.match(labelledValuePattern(label))?.[1]?.trim();
+    if (value) return value;
+  }
+
+  return null;
+}
+
+/**
+ * Etiqueta seguida de su valor en negrita.
+ *
+ * Exigir la negrita no es cosmético: es lo que separa una etiqueta de verdad de
+ * las mismas palabras dentro de una frase. En la transferencia, «desde» aparece
+ * dos veces —«Realizaste una transferencia de *S/ 50.00* desde tu *Cuenta
+ * corriente*» y la fila «Desde *Cuenta corriente*»—, y solo la segunda tiene el
+ * valor pegado a la etiqueta. Sin este requisito, la primera gana por estar
+ * antes y el parser acaba leyendo la cuenta equivocada.
+ */
+function labelledValuePattern(label: string): RegExp {
+  return new RegExp(
+    `(?:^|\\n|\\*\\s*)${toLabelPattern(label)}\\s*\\*?\\s*:?\\s*\\*([^*\\n]+)`,
+    "i",
+  );
+}
+
+/**
+ * Últimos 4 dígitos que aparecen DESPUÉS de una etiqueta concreta.
+ *
+ * El número de cuenta no va en el valor de la etiqueta, sino en el renglón
+ * siguiente:
+ *
+ *     Desde *Cuenta corriente*
+ *     **** 4035
+ *
+ * Anclarlo a la etiqueta es lo que evita el error de la transferencia, donde hay
+ * dos cuentas: la del destinatario bajo «Enviado a» y la tuya bajo «Desde».
+ * Buscar «el primer **** del correo» guardaría la ajena.
+ */
+export function findMaskedDigitsAfterLabel(
+  body: NormalizedBody,
+  labels: string[],
+): string | null {
+  for (const label of labels) {
+    // El ancla es la etiqueta CON su valor en negrita, no la palabra suelta.
+    const match = body.text.match(labelledValuePattern(label));
+    if (!match || match.index === undefined) continue;
+
+    const after = body.text.slice(match.index + match[0].length);
+    const digits = after.match(/\*{2,}\s*(\d{4})/)?.[1];
+    if (digits) return digits;
+  }
+
+  return null;
+}
+
+/**
  * Quita el énfasis `*...*` con el que Gmail representa el `<b>` del HTML.
  *
  * Solo se elimina el par EXTERIOR. Hay comercios cuyo nombre lleva asteriscos
@@ -227,7 +325,12 @@ export function parseAmount(input: string | null | undefined): ParsedAmount | nu
  * Convierte una fecha en español a ISO-8601 con el offset de Lima.
  *
  * Entrada:  `26 de agosto de 2026 - 06:28 PM`
+ *           `Jueves, 03 Septiembre 2026 - 10:18 A. M.`
  * Salida:   `2026-08-26T18:28:00-05:00`
+ *
+ * Los «de» son OPCIONALES: los avisos de consumo y las transferencias los
+ * escriben, y los pagos de servicio no. El día de la semana delante sobra sin
+ * hacer nada, porque el patrón no está anclado al inicio de la cadena.
  *
  * Tolera `p. m.` / `p.m.` / `PM`, formato 24 h sin meridiano, segundos
  * opcionales y varios separadores entre fecha y hora.
@@ -240,7 +343,7 @@ export function parseSpanishDateTime(input: string | null | undefined): string |
   const haystack = deaccent(normalizeEmailBody(input));
 
   const match = haystack.match(
-    /(\d{1,2})\s+de\s+([a-z]+)\s+de\s+(\d{4})(?:\s*[-–—,/]\s*|\s+(?:a\s+las\s+)?|\s*)(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(a\.?\s*m\.?|p\.?\s*m\.?)?/,
+    /(\d{1,2})\s+(?:de\s+)?([a-z]+)\s+(?:de\s+)?(\d{4})(?:\s*[-–—,/]\s*|\s+(?:a\s+las\s+)?|\s*)(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(a\.?\s*m\.?|p\.?\s*m\.?)?/,
   );
   if (!match) return null;
 
