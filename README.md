@@ -1372,6 +1372,60 @@ una frase construida a partir de los mismos hechos. Esa frase de respaldo hace
 falta igual para cuando Gemini tarda de más o falla, así que verificar sale casi
 gratis.
 
+### Buscar en el comentario
+
+El comentario también es consultable, y sin intención nueva: es un filtro más,
+así que funciona con las doce.
+
+```
+¿Cuántos movimientos tienen «Hanna» en el comentario?
+¿Cuánto he gastado en movimientos con «Lley» en el comentario?
+Muéstrame los movimientos cuyo comentario contiene «Hanna»
+```
+
+Coincidencia **parcial y sin distinguir mayúsculas** («Descuento lley» y «Otros
+Lley» cuentan los dos), resuelta con `ILIKE` en la consulta.
+
+Los comodines de SQL se **quitan** del término en vez de escaparlos: PostgREST no
+expone la cláusula `ESCAPE`, así que un «50 %» escrito por ti se convertiría en un
+comodín que devuelve medio historial. Y si al quitarlos no queda nada buscable, se
+devuelven **cero filas**, no «sin filtrar»: quien pidió buscar en el comentario no
+puede recibir el historial entero como si todo hubiera coincidido.
+
+### Gráficos
+
+Algunas respuestas llevan un gráfico simple encima de la tabla.
+
+```
+Delivery      ████████████████████  S/ 486.50
+Supermercado  █████████████         S/ 312.00
+Transporte    ███████               S/ 180.00
+```
+
+**Dibujados a mano con SVG y divs, sin librería.** El proyecto no tiene ninguna
+—el combobox, los iconos y la barra de las metas también están hechos así— y
+traerse una costaría más peso que el archivo entero.
+
+**Quién decide si hay gráfico: la INTENCIÓN**, que es la lectura que el modelo
+hizo de tu pregunta. Si entendió `category_breakdown` es porque le preguntaste
+cómo se reparte el gasto, y eso se lee mejor en barras. Resolverlo así no gasta
+un token más y hace imposible que pida la línea temporal de un único dato.
+
+| Lleva gráfico | No lleva |
+|---|---|
+| Reparto por categoría o grupo | Una cifra suelta |
+| Los movimientos más altos | Una lista de movimientos individuales |
+| Comparación de dos períodos | Una serie de un solo punto |
+
+La fila de resto —«Otras 7»— se queda fuera: es un agregado sintético y pintarlo
+junto a categorías reales invitaría a compararlo con ellas.
+
+Las barras van **horizontales** porque las etiquetas son nombres largos —«Peajes
+y estacionamiento»— y girarlas en un móvil sería ilegible. La línea escala del
+menor al mayor valor y **no desde cero**, para que tres meses entre 900 y 1000 no
+salgan como una recta plana; por eso las cifras van escritas debajo, para que esa
+escala no exagere una diferencia pequeña.
+
 ### Fechas
 
 Entiende `hoy`, `ayer`, `esta semana`, `este mes`, `mes anterior`, `agosto`,

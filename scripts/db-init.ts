@@ -38,6 +38,7 @@ const EXPECTED = {
     "exchange_rates",
     "auth_attempts",
     "category_goals",
+    "rate_limits",
   ],
   /** Columnas que el código da por hechas. `tabla.columna`. */
   columns: [
@@ -67,6 +68,8 @@ const EXPECTED = {
     "exchange_rates.usd_pen",
     "auth_attempts.failed_count",
     "auth_attempts.locked_until",
+    "rate_limits.hits",
+    "rate_limits.window_started_at",
     "category_goals.category",
     "category_goals.year",
     "category_goals.month",
