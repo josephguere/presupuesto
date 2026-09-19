@@ -33,14 +33,14 @@ import type { Group, SummaryCategory } from "@/lib/categories";
  * encajar.
  *
  * AQUÍ SE RECHAZA TODO LO IMPOSIBLE, y se hace SIN TOCAR SUPABASE. Una intención
- * que no está entre las doce, una categoría que no existe, un `group_total` sin
+ * que no está en el catálogo, una categoría que no existe, un `group_total` sin
  * grupo: todo eso muere antes de que se abra una sola conexión.
  *
  * LA DEFENSA CONTRA LA INYECCIÓN NO ES EL PROMPT, igual que en
  * `lib/suggest/gemini.ts`. La pregunta la escribe el usuario y los nombres de
  * comercio vienen de correos del banco. Que el modelo devuelva `inScope: true`
  * después de leer «ignora tus instrucciones» no sirve de nada: lo único que puede
- * conseguir una inyección es elegir OTRA de las doce intenciones con OTRO filtro
+ * conseguir una inyección es elegir OTRA intención del catálogo con OTRO filtro
  * del catálogo, y entonces el usuario ve un total real de su propio presupuesto
  * que no era el que pidió. No hay ninguna forma de que el modelo escriba SQL,
  * nombre una tabla, lea una columna que no está en la lista o escriba nada.
@@ -59,6 +59,7 @@ export const INTENTS = [
   "group_breakdown",
   "merchant_total",
   "period_comparison",
+  "monthly_evolution",
 ] as const;
 
 export type IntentName = (typeof INTENTS)[number];
@@ -154,8 +155,28 @@ export function buildIntentResponseSchema(catalog: Catalog): Record<string, unkn
         type: "string",
         description: "Nombre del comercio tal como lo dijo. Cadena vacía si no lo dijo.",
       },
+      comentario: {
+        type: "string",
+        description:
+          "Texto que debe contener el comentario del movimiento. Solo si el " +
+          "usuario habla del comentario, la nota o la descripción. Cadena vacía si no.",
+      },
       orden: { type: "string", enum: [...LIST_ORDERS] },
       limite: { type: "integer", description: "Cuántos movimientos pidió. 0 si no lo dijo." },
+      unidadEvolucion: {
+        type: "string",
+        enum: ["dia", "mes"],
+        description:
+          "Solo con monthly_evolution: «dia» si pidió ver por días " +
+          "(«día a día», «diario»), «mes» en cualquier otro caso, incluido " +
+          "si no lo dijo.",
+      },
+      cantidadEvolucion: {
+        type: "integer",
+        description:
+          "Solo con monthly_evolution: cuántas unidades mirar hacia atrás " +
+          "(meses o días, según unidadEvolucion). 0 si no lo dijo.",
+      },
     },
     // Todos obligatorios: un esquema plano y sin opcionales es el que mejor
     // cumplen los modelos. Los campos que no aplican llevan el centinela.
@@ -175,8 +196,11 @@ export function buildIntentResponseSchema(catalog: Catalog): Record<string, unkn
       "grupo",
       "sinCategoria",
       "comercio",
+      "comentario",
       "orden",
       "limite",
+      "unidadEvolucion",
+      "cantidadEvolucion",
     ],
   };
 }
@@ -192,6 +216,15 @@ export interface IntentFilters {
   grupo?: Group;
   sinCategoria?: boolean;
   comercio?: string;
+  /**
+   * Texto que debe aparecer en el comentario del movimiento.
+   *
+   * Es un FILTRO más, no una intención nueva: «¿cuánto gasté en movimientos con
+   * Lley en el comentario?» es un `total_expenses` con este campo puesto, y
+   * «muéstrame los que dicen Hanna» es un `transaction_list`. Así funciona con
+   * todas las intenciones sin añadir ninguna.
+   */
+  comentario?: string;
 }
 
 export type Intent =
@@ -223,6 +256,21 @@ export type Intent =
     }
   | { intencion: "group_total"; periodo: PeriodSpec; filtros: IntentFilters }
   | { intencion: "group_breakdown"; periodo: PeriodSpec; filtros: IntentFilters }
+  | {
+      intencion: "monthly_evolution";
+      periodo: PeriodSpec;
+      filtros: IntentFilters;
+      /** «dia» o «mes». Decide cada cuánto se agrupa la serie. */
+      unidad: "dia" | "mes";
+      /**
+       * Cuántas unidades atrás, contando la actual.
+       *
+       * Son MESES si `unidad` es «mes», y DÍAS si `unidad` es «dia» — el mismo
+       * número significa cosas muy distintas según la unidad, así que no hay
+       * un tope común: se aplica el de la unidad que corresponda.
+       */
+      cantidad: number;
+    }
   | { intencion: "merchant_total"; periodo: PeriodSpec; filtros: IntentFilters }
   | {
       intencion: "period_comparison";
@@ -271,7 +319,7 @@ export function parseIntent(raw: unknown, catalog: Catalog, now: Date = new Date
 
   // Fuera de alcance: lo dice el modelo, y el servidor lo respeta sin más
   // preguntas. La comprobación que de verdad contiene es la del enum de
-  // `intencion`: sin una de las doce no hay nada que ejecutar.
+  // `intencion`: sin una del catálogo no hay nada que ejecutar.
   if (campos.enAlcance === false) {
     return rechazo("fuera_de_alcance", "el modelo marcó la pregunta fuera de alcance");
   }
@@ -370,6 +418,21 @@ export function parseIntent(raw: unknown, catalog: Catalog, now: Date = new Date
 
     case "group_breakdown":
       return { ok: true, intent: { intencion, periodo, filtros: filtros.value } };
+
+    case "monthly_evolution": {
+      const unidad = campos.unidadEvolucion === "dia" ? "dia" : "mes";
+
+      return {
+        ok: true,
+        intent: {
+          intencion,
+          periodo,
+          filtros: filtros.value,
+          unidad,
+          cantidad: readEvolutionAmount(unidad, campos.cantidadEvolucion),
+        },
+      };
+    }
 
     case "merchant_total": {
       if (!filtros.value.comercio) {
@@ -560,6 +623,12 @@ function readFilters(campos: Record<string, unknown>, catalog: Catalog): FilterR
   const comercio = readTerm(campos.comercio);
   if (comercio) value.comercio = comercio.slice(0, 80);
 
+  // Igual que el comercio: TEXTO LIBRE, no hay catálogo de comentarios que
+  // validar. No acaba en ningún `eq`; va a un `ilike` con los comodines ya
+  // quitados en `lib/transactions.ts`.
+  const comentario = readTerm(campos.comentario);
+  if (comentario) value.comentario = comentario.slice(0, 80);
+
   return { value };
 }
 
@@ -582,6 +651,30 @@ function readLimit(value: unknown, rango: { defecto: number; maximo: number }): 
   const pedido = readInteger(value);
   if (pedido <= 0) return rango.defecto;
   return Math.min(pedido, rango.maximo);
+}
+
+/**
+ * Cuántas unidades mira la evolución, según sea diaria o mensual.
+ *
+ * MESES: seis por defecto —medio año entra de un vistazo en un móvil—, entre
+ * dos y veinticuatro. Menos de dos no es una evolución —sería un punto suelto—
+ * y más de veinticuatro convierte la línea en un garabato.
+ *
+ * DÍAS: catorce por defecto —dos semanas—, entre dos y sesenta. El tope es
+ * mayor porque cada punto pesa menos: sesenta días siguen siendo una línea
+ * legible, mientras que sesenta meses no lo serían.
+ */
+export const EVOLUTION_RANGES = {
+  mes: { defecto: 6, minimo: 2, maximo: 24 },
+  dia: { defecto: 14, minimo: 2, maximo: 60 },
+} as const;
+
+function readEvolutionAmount(unidad: "dia" | "mes", value: unknown): number {
+  const rango = EVOLUTION_RANGES[unidad];
+  const pedido = readInteger(value);
+  if (pedido <= 0) return rango.defecto;
+
+  return Math.min(Math.max(pedido, rango.minimo), rango.maximo);
 }
 
 function readOrder(value: unknown): ListOrder {
@@ -611,11 +704,13 @@ function readMetric(value: unknown): ComparisonMetric {
 export function historyNote(intent: Intent, period: ResolvedPeriod): string {
   const partes = [intent.intencion, period.label];
 
-  const { categoria, categoriaResumen, grupo, comercio, sinCategoria } = intent.filtros;
+  const { categoria, categoriaResumen, grupo, comercio, comentario, sinCategoria } =
+    intent.filtros;
   if (categoria) partes.push(`categoría ${categoria}`);
   if (categoriaResumen) partes.push(`resumen ${categoriaResumen}`);
   if (grupo) partes.push(`grupo ${grupo}`);
   if (comercio) partes.push(`comercio ${comercio}`);
+  if (comentario) partes.push(`comentario ${comentario}`);
   if (sinCategoria) partes.push("sin categoría");
 
   return partes.join(" · ");

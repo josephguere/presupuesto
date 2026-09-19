@@ -30,13 +30,22 @@ export const ORIGINS = ["EMAIL", "MANUAL"] as const;
 export type Origin = (typeof ORIGINS)[number];
 
 /**
- * Origen del dato bancario. Al añadir bancos se agregan variantes aquí
+ * Origen del dato bancario. Al añadir proveedores se agregan variantes aquí
  * (`GMAIL_INTERBANK`, `GMAIL_BBVA`, ...) sin tocar el resto del modelo.
  */
-export type TransactionSource = "GMAIL_BCP" | "MANUAL";
+export type TransactionSource = "GMAIL_BCP" | "GMAIL_YAPE" | "MANUAL";
 
-/** Bancos soportados. */
-export type Bank = "BCP";
+/**
+ * Entidad que originó el movimiento.
+ *
+ * Yape es una billetera, no un banco, pero ocupa el mismo hueco del modelo: es
+ * QUIÉN notificó la operación. Distinguirlo en otra columna obligaría a
+ * consultar dos campos para saber de dónde salió un movimiento.
+ *
+ * Ojo con no confundirlo con `Origin`, que es otra pregunta: `bank` dice de qué
+ * entidad viene, `origin` dice si entró por correo o lo escribió el usuario.
+ */
+export type Bank = "BCP" | "YAPE";
 
 /** Moneda en formato ISO-4217. */
 export type CurrencyCode = "PEN" | "USD";
@@ -95,6 +104,8 @@ export interface TransactionRow {
   exchange_rate_source: string | null;
   /** Eliminacion logica: `false` = dado de baja, sigue en la tabla. */
   activo: boolean;
+  /** `false` = existe y es editable, pero no suma en ningun calculo. */
+  contabilizar: boolean;
   /** Cuando se dio de baja. `null` mientras esta activo. */
   eliminado_at: string | null;
   is_test: boolean;
@@ -138,6 +149,15 @@ export interface Transaction {
   /** Derivado de la categoría a través del resumen, nunca almacenado. */
   group: Group | null;
   origin: Origin;
+  /**
+   * ¿Participa en resumen, totales y metas?
+   *
+   * NO tiene nada que ver con estar eliminado. Un movimiento con
+   * `contabilizar: false` se lista, se edita y se conserva igual que cualquier
+   * otro; lo único que hace es no sumar. Ver el comentario de la columna en
+   * `sql/init.sql`.
+   */
+  contabilizar: boolean;
   /**
    * Fecha de baja lógica, o `null` si el movimiento está activo.
    *

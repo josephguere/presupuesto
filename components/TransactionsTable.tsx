@@ -15,6 +15,7 @@ import type { Transaction } from "@/types/transaction";
 import { MovementDialog } from "./MovementDialog";
 import { DeleteMovementButton } from "./DeleteMovementButton";
 import { RestoreMovementButton } from "./RestoreMovementButton";
+import { PurgeMovementButton } from "./PurgeMovementButton";
 
 /**
  * Lista de movimientos.
@@ -75,7 +76,8 @@ export function TransactionsTable({
         </p>
         {!isTrash && (
           <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-500">
-            Aparecerán aquí en cuanto llegue un correo del BCP, o créalos a mano.
+            Aparecerán aquí en cuanto llegue un correo del BCP o de Yape, o
+            créalos a mano.
           </p>
         )}
       </div>
@@ -135,7 +137,8 @@ export function TransactionsTable({
             </div>
 
             <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
-              <OriginBadge origin={transaction.origin} />
+              <OriginBadge origin={transaction.origin} bank={transaction.bank} />
+              {!transaction.contabilizar && <NotCountedBadge />}
               <span className="truncate">{transaction.operationType}</span>
               <span className="tabular-nums">{maskCard(transaction.cardLast4)}</span>
               {transaction.operationNumber && (
@@ -264,7 +267,10 @@ export function TransactionsTable({
                   {transaction.comment ?? "—"}
                 </td>
                 <td className="px-3 py-3">
-                  <OriginBadge origin={transaction.origin} />
+                  <div className="flex flex-wrap items-center gap-1">
+                    <OriginBadge origin={transaction.origin} bank={transaction.bank} />
+                    {!transaction.contabilizar && <NotCountedBadge />}
+                  </div>
                 </td>
                 <td className="px-3 py-3 text-right font-semibold tabular-nums whitespace-nowrap text-zinc-900 dark:text-zinc-50">
                   {formatCurrency(transaction.amount)}
@@ -322,8 +328,17 @@ function RowActions({
   if (actions === "none") return null;
 
   if (actions === "restore") {
+    // Las dos salidas de la papelera, y en este orden: recuperar es lo normal y
+    // va primero; destruir es la excepcion, va despues y en rojo.
     return (
-      <RestoreMovementButton transactionId={transaction.id} label={transaction.merchant} />
+      <div className="flex shrink-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
+        <RestoreMovementButton transactionId={transaction.id} label={transaction.merchant} />
+        <PurgeMovementButton
+          transactionId={transaction.id}
+          label={transaction.merchant}
+          amount={formatCurrency(transaction.amount)}
+        />
+      </div>
     );
   }
 
@@ -376,9 +391,20 @@ function GroupLabel({ group }: { group: string | null }) {
   );
 }
 
-/** EMAIL o MANUAL, en una etiqueta pequeña para distinguirlos de un vistazo. */
-function OriginBadge({ origin }: { origin: string }) {
+/**
+ * De dónde salió el movimiento.
+ *
+ * Para los que llegaron por correo se enseña la ENTIDAD —BCP, YAPE— en lugar de
+ * la palabra EMAIL, que es cierta pero no dice nada: al repasar el mes lo útil
+ * es distinguir un consumo con tarjeta de un yapeo. Los manuales siguen
+ * diciendo MANUAL, porque ahí no hay entidad que nombrar.
+ *
+ * La columna sigue siendo `origin` en la base de datos; esto es presentación.
+ */
+function OriginBadge({ origin, bank }: { origin: string; bank: string }) {
   const isEmail = origin === "EMAIL";
+  const label = isEmail && bank && bank !== "—" ? bank : origin;
+
   return (
     <span
       className={`rounded-md px-1.5 py-0.5 text-xs font-medium ${
@@ -387,7 +413,25 @@ function OriginBadge({ origin }: { origin: string }) {
           : "bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300"
       }`}
     >
-      {origin}
+      {label}
+    </span>
+  );
+}
+
+/**
+ * Marca discreta de «no cuenta en los totales».
+ *
+ * En ámbar y NO en rojo a propósito: el rojo es el color de lo eliminado y de
+ * los errores, y esto no es ninguna de las dos cosas. El movimiento está vivo,
+ * se edita como cualquier otro y lo único que pasa es que no suma.
+ */
+function NotCountedBadge() {
+  return (
+    <span
+      title="No participa en el resumen, los totales ni las metas"
+      className="rounded-md bg-amber-50 px-1.5 py-0.5 text-xs font-medium whitespace-nowrap text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+    >
+      No contabilizado
     </span>
   );
 }

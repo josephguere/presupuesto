@@ -15,6 +15,16 @@ const state = vi.hoisted(() => ({
   inserts: [] as Record<string, unknown>[],
   updates: [] as Array<{ id: unknown; values: Record<string, unknown> }>,
   deletes: [] as unknown[],
+  /**
+   * Filas que existen para el DELETE de `purgeMovement`.
+   *
+   * El doble APLICA los filtros de verdad, no devuelve siempre «borrado»: es
+   * lo único que permite comprobar que un movimiento ACTIVO no se puede purgar.
+   * Un doble complaciente dejaría pasar justo el fallo que importa.
+   */
+  rows: [] as Array<{ id: string; activo: boolean }>,
+  /** Filtros del último delete, para aseverar que la cerradura viaja. */
+  deleteFilters: [] as Array<[string, unknown]>,
 }));
 
 vi.mock("@/lib/supabase/server", () => ({
@@ -33,12 +43,36 @@ vi.mock("@/lib/supabase/server", () => ({
           return Promise.resolve({ error: null });
         },
       }),
-      delete: () => ({
-        eq: (_column: string, id: unknown) => {
-          state.deletes.push(id);
-          return Promise.resolve({ error: null });
-        },
-      }),
+      delete: (options?: { count?: string }) => {
+        state.deleteFilters = [];
+
+        // Encadenable Y esperable: PostgREST permite varios `.eq()` seguidos y
+        // luego un `await`. Con un `Promise` a secas el segundo `.eq()` no
+        // existiría y la prueba fallaría por el doble, no por el código.
+        const query = {
+          eq(column: string, value: unknown) {
+            state.deleteFilters.push([column, value]);
+            if (column === "id") state.deletes.push(value);
+            return query;
+          },
+          then(resolve: (value: { error: null; count: number | null }) => void) {
+            const matches = state.rows.filter((row) =>
+              state.deleteFilters.every(([column, value]) =>
+                column === "id" ? row.id === value : row.activo === value,
+              ),
+            );
+
+            state.rows = state.rows.filter((row) => !matches.includes(row));
+
+            resolve({
+              error: null,
+              count: options?.count === "exact" ? matches.length : null,
+            });
+          },
+        };
+
+        return query;
+      },
     }),
   }),
 }));
@@ -53,9 +87,8 @@ vi.mock("@/lib/auth/guard", () => ({
   SESSION_REQUIRED_MESSAGE: "Tu sesión expiró. Vuelve a ingresar tu código.",
 }));
 
-const { createMovement, updateMovement, deleteMovement, restoreMovement } = await import(
-  "./actions"
-);
+const { createMovement, updateMovement, deleteMovement, restoreMovement, purgeMovement } =
+  await import("./actions");
 
 const VALID_ID = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
 
@@ -84,6 +117,9 @@ beforeEach(() => {
   state.inserts = [];
   state.updates = [];
   state.deletes = [];
+  state.deleteFilters = [];
+  // Por defecto, el movimiento existe y está EN LA PAPELERA.
+  state.rows = [{ id: VALID_ID, activo: false }];
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -302,6 +338,64 @@ describe("restoreMovement", () => {
       expect((await restoreMovement(id)).ok).toBe(false);
     }
     expect(state.updates).toHaveLength(0);
+  });
+});
+
+describe("purgeMovement — borrado definitivo", () => {
+  it("borra de verdad un movimiento que ya estaba en la papelera", async () => {
+    const result = await purgeMovement(VALID_ID);
+
+    expect(result.ok).toBe(true);
+    expect(state.deletes).toEqual([VALID_ID]);
+    // Y desaparece: no queda fila que restaurar.
+    expect(state.rows).toHaveLength(0);
+  });
+
+  it("NO puede borrar un movimiento activo", () => {
+    // La cerradura que importa. Una Server Action es un endpoint publico, asi
+    // que alguien con el id podria invocarla sobre un movimiento vivo; el
+    // filtro `activo = false` va en la propia sentencia para impedirlo.
+    state.rows = [{ id: VALID_ID, activo: true }];
+
+    return purgeMovement(VALID_ID).then((result) => {
+      expect(result.ok).toBe(false);
+      expect(state.rows).toHaveLength(1);
+    });
+  });
+
+  it("el filtro de `activo` viaja SIEMPRE en la sentencia", async () => {
+    await purgeMovement(VALID_ID);
+
+    expect(state.deleteFilters).toEqual([
+      ["id", VALID_ID],
+      ["activo", false],
+    ]);
+  });
+
+  it("avisa cuando no borro nada en vez de decir que si", async () => {
+    // Un id que no existe: responder `ok` seria mentir sobre lo ocurrido.
+    state.rows = [];
+
+    const result = await purgeMovement(VALID_ID);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.message).toContain("Eliminados");
+  });
+
+  it("rechaza un id que no es UUID sin tocar la base de datos", async () => {
+    expect((await purgeMovement("no-soy-uuid")).ok).toBe(false);
+    expect(state.deletes).toEqual([]);
+  });
+
+  it("exige sesion", async () => {
+    auth.session = false;
+
+    const result = await purgeMovement(VALID_ID);
+
+    expect(result.ok).toBe(false);
+    expect(state.deletes).toEqual([]);
+    expect(state.rows).toHaveLength(1);
   });
 });
 

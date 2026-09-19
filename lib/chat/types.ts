@@ -40,6 +40,21 @@ export interface ChatResultRow {
 }
 
 /** La tabla que acompaña a la respuesta. `null` cuando no hay cifras que enseñar. */
+/**
+ * Un gráfico simple que acompaña a la respuesta.
+ *
+ * Los puntos vienen YA CALCULADOS por el servidor, igual que las filas de la
+ * tabla: el modelo no dibuja ni decide escalas. Lo único que llega son pares
+ * etiqueta/valor, y el componente los pinta.
+ */
+export interface ChatChart {
+  /** `bar` para comparar cosas, `line` para una evolución en el tiempo. */
+  type: "bar" | "line";
+  points: Array<{ label: string; value: number }>;
+  /** Decide cómo se escribe cada valor: importe o recuento. */
+  unit: "PEN" | "movimientos";
+}
+
 export interface ChatResult {
   intent: string;
   /** Cabeceras en castellano, dos o tres. Las decide el servidor. */
@@ -49,6 +64,13 @@ export interface ChatResult {
   periodLabel?: string | null;
   /** Filas que el servidor omitió por el tope. */
   omitted?: number;
+  /**
+   * Gráfico, cuando la pregunta se entiende mejor con uno.
+   *
+   * `null` en la mayoría: una cifra suelta no se grafica, y una lista de
+   * movimientos individuales tampoco. Quién lo decide: `toChatChart`.
+   */
+  chart?: ChatChart | null;
 }
 
 /** Códigos de error del chat. Cada uno decide qué mensaje ve el usuario. */

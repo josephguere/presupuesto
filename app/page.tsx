@@ -136,13 +136,40 @@ function rangeLabel(from?: string, to?: string): string {
   return "Rango personalizado";
 }
 
-/** Resume en una línea qué filtros están puestos. */
+/**
+ * Resume en una línea qué filtros están puestos.
+ *
+ * Con varias opciones marcadas se dice cuántas, no cuáles: enumerar cinco
+ * categorías en el subtítulo lo parte en tres líneas y deja de leerse.
+ */
 function describeActiveFilters(raw: {
-  category?: string;
-  group?: string;
+  categories: string[];
+  groups: string[];
+  accounting: string[];
 }): string {
   const parts: string[] = [];
-  if (raw.group) parts.push(raw.group);
-  if (raw.category) parts.push(raw.category === "__sin_categoria__" ? "Sin categoría" : raw.category);
+
+  parts.push(...describeLevel(raw.groups, "grupos"));
+  parts.push(...describeLevel(raw.categories.map(categoryLabel), "categorías"));
+
+  // Solo se nombra cuando NO es el de por defecto: decir «contabilizados» en
+  // cada visita sería ruido, y callar que se están viendo los que no cuentan
+  // sería engañoso.
+  if (raw.accounting.length === 1 && raw.accounting[0] === "no-contabilizados") {
+    parts.push("solo no contabilizados");
+  } else if (raw.accounting.length > 1) {
+    parts.push("contabilizados y no contabilizados");
+  }
+
   return parts.length > 0 ? parts.join(" · ") : "Todos los movimientos";
+}
+
+function describeLevel(values: string[], plural: string): string[] {
+  if (values.length === 0) return [];
+  if (values.length === 1) return [values[0]];
+  return [`${values.length} ${plural}`];
+}
+
+function categoryLabel(value: string): string {
+  return value === "__sin_categoria__" ? "Sin categoría" : value;
 }

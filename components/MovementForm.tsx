@@ -298,6 +298,27 @@ export function MovementForm({
             className={inputClass}
           />
         </Field>
+
+        {/*
+          Contabilizado. Marcada por defecto al crear, y al editar refleja lo
+          que el movimiento tenga guardado.
+
+          Desmarcarla NO elimina nada: el movimiento sigue en la lista y se
+          sigue pudiendo editar; lo unico que hace es no sumar en el resumen,
+          los totales ni las metas. Quien elimina es la papelera, que es otra
+          columna (`activo`) y otro boton.
+        */}
+        <div className="col-span-2">
+          <label className="flex items-center gap-2.5">
+            <input
+              type="checkbox"
+              name="contabilizar"
+              defaultChecked={transaction?.contabilizar ?? true}
+              className="size-4 shrink-0 rounded border-zinc-300 dark:border-zinc-600"
+            />
+            <span className="text-sm text-zinc-700 dark:text-zinc-300">Contabilizado</span>
+          </label>
+        </div>
       </div>
 
       {message && (

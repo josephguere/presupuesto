@@ -6,7 +6,15 @@ import {
   type TransactionFilters,
 } from "@/lib/transactions";
 import { merchantFamilyKey, normalizeMerchant } from "@/lib/suggest/merchant";
-import { toTransactionFilters, type ResolvedPeriod } from "@/lib/period";
+import { LIMA_TIME_ZONE, formatMonthLabel } from "@/lib/format";
+import {
+  addDays,
+  formatDay,
+  getLimaToday,
+  resolvePeriod,
+  toTransactionFilters,
+  type ResolvedPeriod,
+} from "@/lib/period";
 import { TRUNCATED_WARNING } from "./limits";
 import {
   etiquetaFecha,
@@ -28,7 +36,7 @@ import type { TotalsNode } from "@/types/transaction";
 /**
  * El ejecutor: de una intención validada a datos.
  *
- * ES EL ÚNICO SITIO donde las doce intenciones se convierten en lecturas, y las
+ * ES EL ÚNICO SITIO donde las intenciones se convierten en lecturas, y las
  * hace SIEMPRE a través de `getTransactions`, `buildSummary` y
  * `buildGroupedTotals`. Este módulo NO importa `getSupabaseAdmin`, no construye
  * consultas, no nombra tablas ni columnas y nunca pasa `status`. Eso hace que
@@ -56,7 +64,16 @@ export async function executeIntent(
   period: ResolvedPeriod,
   options: { signal?: AbortSignal; comparePeriod?: ResolvedPeriod } = {},
 ): Promise<ExecutionResult> {
-  const rows = await readPeriod(period, intent.filtros, options.signal);
+  // La evolución mensual IGNORA el período que venga y lee los N meses que
+  // pide. Sin esto leería solo el mes en curso —que es el período por
+  // defecto— y los demás meses saldrían en cero: una línea plana que parece
+  // un dato y no lo es.
+  const efectivo =
+    intent.intencion === "monthly_evolution"
+      ? evolutionPeriod(intent.unidad, intent.cantidad)
+      : period;
+
+  const rows = await readPeriod(efectivo, intent.filtros, options.signal);
   const merchant = matchMerchant(rows, intent.filtros.comercio);
 
   // El emparejamiento por comercio ocurre en memoria: `merchant` en la base de
@@ -72,7 +89,7 @@ export async function executeIntent(
 
   const base = {
     intencion: intent.intencion,
-    periodo: toPeriodoAplicado(period),
+    periodo: toPeriodoAplicado(efectivo),
     filtros,
     truncado: rows.length >= MAX_ROWS,
     avisos: rows.length >= MAX_ROWS ? [TRUNCATED_WARNING] : [],
@@ -125,6 +142,11 @@ export async function executeIntent(
     case "group_breakdown":
       return { ...base, ...breakdown(filtradas, "grupo", intent.filtros) };
 
+    case "monthly_evolution":
+      // Las filas ya vienen leídas: el período de esta intención abarca TODA
+      // la ventana pedida, y aquí solo se reparten por día o por mes.
+      return { ...base, ...evolution(filtradas, intent.unidad, intent.cantidad) };
+
     case "period_comparison": {
       const compare = options.comparePeriod;
       // La ruta siempre lo pasa; sin él no hay nada que comparar y se degrada al
@@ -164,11 +186,28 @@ async function readPeriod(
 ): Promise<Transaction[]> {
   const query: TransactionFilters = { ...toTransactionFilters(period) };
 
-  // El nivel MÁS específico manda, igual que en la pantalla de Movimientos.
+  // Los tres niveles viajan como LISTAS, igual que en la pantalla de
+  // Movimientos: `resolveCategoryFilter` los cruza por intersección. El chat
+  // solo puede nombrar uno de cada nivel, así que aquí son listas de uno; se
+  // pasan los tres a la vez y no «el más específico», porque esa decisión ya
+  // la toma la capa de datos y duplicarla aquí las dejaría discrepar.
   if (filtros.sinCategoria) query.uncategorized = true;
-  else if (filtros.categoria) query.category = filtros.categoria as TransactionFilters["category"];
-  else if (filtros.categoriaResumen) query.summary = filtros.categoriaResumen;
-  else if (filtros.grupo) query.group = filtros.grupo;
+  if (filtros.categoria) {
+    query.categories = [filtros.categoria as NonNullable<TransactionFilters["categories"]>[number]];
+  }
+  if (filtros.categoriaResumen) query.summaries = [filtros.categoriaResumen];
+  if (filtros.grupo) query.groups = [filtros.grupo];
+
+  // El comentario se filtra en la CONSULTA, no en memoria como el comercio:
+  // `ilike` hace exactamente lo que hace falta —parcial y sin distinguir
+  // mayúsculas— y así el tope de filas se aplica ya filtrado.
+  if (filtros.comentario) query.commentContains = filtros.comentario;
+
+  // Lo no contabilizado no entra: el chat responde sobre las mismas cifras que
+  // enseña el Resumen. `getTransactions` ya lo excluye por defecto, pero
+  // dejarlo explícito evita que un cambio del valor por defecto cambie en
+  // silencio lo que contesta el chat.
+  query.accounting = ["contabilizados"];
 
   return getTransactions(query, { signal });
 }
@@ -513,6 +552,154 @@ function comparison(
     filasOmitidas: 0,
     vacio: actuales.length === 0 && previas.length === 0,
   };
+}
+
+/**
+ * Gasto por día o por mes, del más antiguo al más reciente.
+ *
+ * EL ORDEN NO SE TOCA: es una serie temporal, así que ordenarla por importe
+ * —como se hace en los desgloses— destruiría justo lo que se quiere ver.
+ *
+ * Los puntos SIN movimientos se incluyen con cero. Saltárselos comprimiría el
+ * eje y haría que un día o un mes sin gastos pareciera no haber existido,
+ * cuando es precisamente un dato.
+ *
+ * Los ingresos quedan fuera, igual que en los desgloses: la pregunta es cómo
+ * evoluciona el GASTO, y el sueldo lo aplastaría todo.
+ */
+function evolution(rows: Transaction[], unidad: "dia" | "mes", cantidad: number): Partes {
+  const gastos = rows.filter((row) => row.group !== "INGRESOS");
+
+  // Se parte de los puntos pedidos, no de los que tengan movimientos: así los
+  // vacíos salen con cero en vez de desaparecer.
+  const claves = unidad === "dia" ? lastDays(cantidad) : lastMonths(cantidad);
+  const etiquetar = unidad === "dia" ? formatDay : formatMonthLabel;
+  const claveDe = unidad === "dia" ? dayKeyOf : monthKeyOf;
+
+  const acumulado = new Map<string, { total: number; count: number }>(
+    claves.map((clave) => [clave, { total: 0, count: 0 }]),
+  );
+
+  for (const row of gastos) {
+    const clave = claveDe(row.transactionAt);
+    const actual = clave ? acumulado.get(clave) : undefined;
+    if (!actual) continue;
+
+    actual.total = round2(actual.total + row.amount);
+    actual.count += 1;
+  }
+
+  const filas: FilaResultado[] = claves.map((clave) => {
+    const { total, count } = acumulado.get(clave)!;
+
+    return {
+      etiqueta: etiquetar(clave),
+      total,
+      texto: metricaMonto("punto", "", total).texto,
+      movimientos: count,
+    };
+  });
+
+  const totales = filas.map((fila) => fila.total);
+  const mayor = filas.reduce((a, b) => (b.total > a.total ? b : a), filas[0]);
+  const singular = unidad === "dia" ? "día" : "mes";
+  const plural = unidad === "dia" ? "días" : "meses";
+
+  return {
+    metricas: [
+      metricaMonto("total", `Total de los últimos ${cantidad} ${plural}`, sumRounded(totales)),
+      metricaMonto(
+        "promedio",
+        `Promedio por ${singular}`,
+        sumRounded(totales) / cantidad,
+      ),
+      metricaMonto(
+        "mayor",
+        `${unidad === "dia" ? "Día" : "Mes"} con más gasto: ${mayor.etiqueta}`,
+        mayor.total,
+      ),
+    ],
+    filas,
+    totalFilas: filas.length,
+    filasOmitidas: 0,
+    // Todos los puntos a cero significa que no hubo ni un gasto en el período.
+    vacio: totales.every((total) => total === 0),
+  };
+}
+
+/**
+ * El período que abarca la ventana pedida, hasta hoy.
+ *
+ * Se construye aquí y no se le pide al modelo: `lib/period.ts` ya resuelve
+ * rangos, y dejar que el modelo calcule «del 1 de abril al 19 de septiembre»
+ * sería pedirle aritmética de calendario, que es donde peor se porta.
+ */
+function evolutionPeriod(unidad: "dia" | "mes", cantidad: number): ResolvedPeriod {
+  const hoy = getLimaToday();
+
+  const from =
+    unidad === "dia" ? addDays(hoy, -(cantidad - 1)) : `${lastMonths(cantidad)[0]}-01`;
+
+  return resolvePeriod({ kind: "rango", from, to: hoy });
+}
+
+/** Las claves `YYYY-MM` de los últimos N meses, de la más antigua a la actual. */
+function lastMonths(meses: number): string[] {
+  const hoy = new Date();
+  const claves: string[] = [];
+
+  for (let atras = meses - 1; atras >= 0; atras -= 1) {
+    // Día 1 a mediodía UTC: inmune a cualquier desfase horario al restar meses.
+    const fecha = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth() - atras, 1, 12));
+    claves.push(
+      `${fecha.getUTCFullYear()}-${String(fecha.getUTCMonth() + 1).padStart(2, "0")}`,
+    );
+  }
+
+  return claves;
+}
+
+/** Las claves `YYYY-MM-DD` de los últimos N días, de la más antigua a hoy. */
+function lastDays(dias: number): string[] {
+  const hoy = getLimaToday();
+  return Array.from({ length: dias }, (_, index) => addDays(hoy, -(dias - 1 - index)));
+}
+
+/** `YYYY-MM` del movimiento, en hora de Lima. */
+function monthKeyOf(iso: string | null): string | null {
+  if (!iso) return null;
+
+  const fecha = new Date(iso);
+  if (Number.isNaN(fecha.getTime())) return null;
+
+  return MONTH_KEY_FORMATTER.format(fecha);
+}
+
+/** `YYYY-MM-DD` del movimiento, en hora de Lima. */
+function dayKeyOf(iso: string | null): string | null {
+  if (!iso) return null;
+
+  const fecha = new Date(iso);
+  if (Number.isNaN(fecha.getTime())) return null;
+
+  return DAY_KEY_FORMATTER.format(fecha);
+}
+
+const MONTH_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: LIMA_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+});
+
+const DAY_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: LIMA_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+function sumRounded(values: number[]): number {
+  return round2(values.reduce((total, value) => total + value, 0));
 }
 
 /** El período, en la forma que viaja en el resultado. */

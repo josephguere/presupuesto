@@ -2,6 +2,7 @@
 
 import { formatCurrency } from "@/lib/format";
 import { MAX_VISIBLE_ROWS } from "@/lib/ai/limits";
+import { ChatChartView } from "./ChatChartView";
 import type { ChatMessageItem, ChatResult, ChatResultRow } from "@/lib/chat/types";
 
 /**
@@ -37,6 +38,21 @@ export function ChatMessage({ message }: { message: ChatMessageItem }) {
       >
         <p className="whitespace-pre-wrap break-words">{message.text}</p>
       </div>
+
+      {/*
+        El grafico va ANTES de la tabla: responde de un vistazo, y quien
+        necesite la cifra exacta la tiene justo debajo. Al reves habria que
+        pasar la tabla entera para llegar a el.
+
+        `chart` es null en la mayoria de respuestas —una cifra suelta no se
+        grafica—, asi que esto no aparece casi nunca. Lo decide el servidor en
+        `toChatChart`.
+      */}
+      {message.result?.chart && (
+        <div className="w-full max-w-[92%] rounded-xl border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900">
+          <ChatChartView chart={message.result.chart} />
+        </div>
+      )}
 
       {message.result && <ChatResultTable result={message.result} />}
     </li>

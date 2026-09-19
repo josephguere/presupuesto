@@ -104,6 +104,10 @@ function createQuery() {
     is: () => query,
     not: () => query,
     in: () => query,
+    // Se acepta sin evaluar: las pruebas de la RUTA no combinan «sin
+    // categoria» con categorias concretas. Quien si lo evalua de verdad es el
+    // doble de `lib/ai/execute.test.ts`, que es donde se prueba el filtrado.
+    or: () => query,
     gte(column: string, value: string) {
       ranges.push([column, "gte", value]);
       return query;
@@ -180,6 +184,7 @@ function row(overrides: Row = {}): Row {
     comment: null,
     origin: "EMAIL",
     activo: true,
+    contabilizar: true,
     is_test: false,
     eliminado_at: null,
     ...overrides,

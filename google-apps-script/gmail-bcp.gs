@@ -1,11 +1,18 @@
 /**
- * Ingesta de correos del BCP: Gmail → API de Next.js.
+ * Ingesta de correos bancarios: Gmail → API de Next.js.
+ *
+ * Proveedores soportados: BCP y Yape.
  *
  * Este script NO interpreta nada. Solo hace tres cosas:
  *
- *   1. Detectar los correos del BCP.
+ *   1. Detectar los correos de cualquier proveedor conocido.
  *   2. Leer su metadata y su texto plano.
- *   3. Enviarlos a POST /api/ingest/bcp.
+ *   3. Enviarlos a POST /api/ingest/email.
+ *
+ * QUIÉN LEE CADA CORREO LO DECIDE LA API, no este script. Aquí solo se filtra
+ * lo que merece la pena enviar; el despacho al parser de BCP o al de Yape ocurre
+ * en `lib/parsers/providers.ts`. Así añadir un banco nuevo es tocar la web y,
+ * como mucho, añadir una entrada a PROVIDERS aquí abajo.
  *
  * Toda la lógica de negocio (validar, parsear, deduplicar, guardar) vive en
  * Next.js. Así se corrige el parser desplegando la web, sin volver a tocar
@@ -19,8 +26,11 @@
  *   2. Pega este archivo.
  *   3. Configuración del proyecto → Propiedades del script → añade:
  *
- *        API_URL     https://tu-app.vercel.app/api/ingest/bcp
+ *        API_URL     https://tu-app.vercel.app/api/ingest/email
  *        INGEST_KEY  (el mismo valor que GMAIL_INGEST_KEY en Vercel)
+ *
+ *      Si ya tenías API_URL apuntando a /api/ingest/bcp, NO hace falta
+ *      cambiarla: esa ruta sigue viva y acepta los correos de Yape igual.
  *
  *   4. Ejecuta `testConnection` una vez y autoriza los permisos.
  *   5. Ejecuta `setup` una vez para crear el trigger de 1 minuto.
@@ -44,31 +54,106 @@
 var REQUIRED_PROPERTIES = ['API_URL', 'INGEST_KEY'];
 
 /**
- * Búsqueda en Gmail.
+ * Proveedores que este script sabe reconocer.
  *
- * Filtra por remitente y por contenido, no por asunto: todavía no conocemos el
- * asunto exacto de todos los correos del BCP. Se puede sobrescribir con la
- * propiedad opcional GMAIL_QUERY sin tocar el código.
+ * UNA SOLA LISTA para las tres cosas que dependen del proveedor: la consulta de
+ * Gmail, el filtro mensaje a mensaje y la etiqueta que se pone. Tenerlas
+ * separadas era lo que hacía que añadir un tipo de correo obligara a acordarse
+ * de tocar dos sitios, y el síntoma de olvidarse es un correo que no llega
+ * nunca a salir de Gmail.
  *
- * Las llaves son el OR de Gmail. Cada frase corresponde a un tipo de correo que
- * la API sabe leer: consumo con tarjeta, pago de servicios y transferencia. Si
- * añades un parser nuevo, esta lista y `looksLikeBcpEmail_` tienen que crecer a
- * la vez, o el correo no llegará nunca a salir de Gmail.
+ *   sender   dominio del remitente. Es el filtro fuerte: lo pone Gmail, no el
+ *            cuerpo del correo.
+ *   markers  frases que identifican una NOTIFICACIÓN DE OPERACIÓN. Hacen falta
+ *            porque el mismo remitente manda también publicidad y avisos, y
+ *            ninguno de esos es un movimiento.
+ *   label    etiqueta que se pone al hilo ya enviado.
+ *
+ * Los marcadores deben coincidir con los de `lib/parsers/`: si aquí falta uno,
+ * el correo se descarta antes de salir de Gmail; si sobra, la API responde
+ * PARSE_ERROR y el correo queda guardado igualmente para reprocesarlo.
  */
-var BCP_SEARCH_BASE =
-  'from:notificaciones@notificacionesbcp.com.pe ' +
-  '{"Realizaste un consumo" "Realizaste una compra" ' +
-  '"Pago de servicios" "Realizaste una transferencia"}';
-
-var DEFAULT_GMAIL_QUERY = BCP_SEARCH_BASE + ' newer_than:2d';
+var PROVIDERS = [
+  {
+    id: 'BCP',
+    sender: 'notificacionesbcp.com.pe',
+    markers: [
+      'realizaste un consumo',
+      'realizaste una compra',
+      'pago de servicios',
+      'realizaste una transferencia'
+    ],
+    label: 'BCP-Ingestado'
+  },
+  {
+    id: 'YAPE',
+    sender: 'yape.pe',
+    markers: [
+      'acabas de yapear',
+      'yapeaste',
+      'monto de yapeo',
+      'yapeo exitoso'
+    ],
+    label: 'Yape-Ingestado'
+  }
+];
 
 /**
- * Etiqueta que se pone a los correos ya enviados.
+ * Construye la consulta de Gmail a partir de PROVIDERS.
  *
- * Es SOLO una marca visual, para que veas en Gmail de un vistazo qué se ingirió.
- * NO se usa para filtrar la búsqueda: las etiquetas de Gmail se aplican al HILO
- * entero, así que excluir hilos etiquetados haría desaparecer para siempre
- * cualquier notificación nueva que Gmail agrupe en un hilo ya marcado.
+ * Queda algo así:
+ *
+ *   ((from:bcp ("frase1" OR "frase2")) OR (from:yape ("frase3"))) newer_than:2d
+ *
+ * SE USA `OR` CON PARÉNTESIS y no las llaves `{}` de Gmail. Las llaves también
+ * son un OR, pero anidarlas —un OR de remitentes, cada uno con su propio OR de
+ * frases— no está documentado que funcione y falla en silencio: la búsqueda
+ * devuelve menos correos de la cuenta y nadie se entera hasta que falta un gasto.
+ * Los paréntesis con OR explícito sí anidan de forma fiable.
+ *
+ * CADA REMITENTE VA CON SUS PROPIAS FRASES, no todas contra todos: si no, un
+ * correo de Yape que contuviera «pago de servicios» entraría por la puerta del
+ * BCP, y al revés. Es lo que pediste evitar al ampliar la búsqueda.
+ */
+function buildProviderQuery_() {
+  var parts = [];
+
+  for (var i = 0; i < PROVIDERS.length; i++) {
+    var provider = PROVIDERS[i];
+    var phrases = [];
+
+    for (var m = 0; m < provider.markers.length; m++) {
+      phrases.push('"' + provider.markers[m] + '"');
+    }
+
+    parts.push('(from:' + provider.sender + ' (' + phrases.join(' OR ') + '))');
+  }
+
+  return '(' + parts.join(' OR ') + ')';
+}
+
+var PROVIDER_SEARCH_BASE = buildProviderQuery_();
+
+/**
+ * Ventana de búsqueda. Dos días, como siempre.
+ *
+ * Es además la ventana de recuperación: si la app estuviera caída, los correos
+ * se reintentan mientras sigan dentro. Se puede sobrescribir con la propiedad
+ * opcional GMAIL_QUERY sin tocar el código.
+ */
+var DEFAULT_GMAIL_QUERY = PROVIDER_SEARCH_BASE + ' newer_than:2d';
+
+/**
+ * Etiqueta por defecto, para quien no configure nada.
+ *
+ * Con PROCESSED_LABEL sin configurar, cada proveedor usa la SUYA —BCP-Ingestado,
+ * Yape-Ingestado— y se distinguen en Gmail de un vistazo. Si se configura
+ * PROCESSED_LABEL, esa vale para todos.
+ *
+ * Es SOLO una marca visual. NO se usa para filtrar la búsqueda: las etiquetas de
+ * Gmail se aplican al HILO entero, así que excluir hilos etiquetados haría
+ * desaparecer para siempre cualquier notificación nueva que Gmail agrupe en un
+ * hilo ya marcado.
  */
 var DEFAULT_PROCESSED_LABEL = 'BCP-Ingestado';
 
@@ -262,7 +347,7 @@ function previewBackfill() {
     for (var t = 0; t < threads.length; t++) {
       var messages = threads[t].getMessages();
       for (var m = 0; m < messages.length; m++) {
-        if (!looksLikeBcpEmail_(messages[m])) continue;
+        if (!looksLikeSupportedEmail_(messages[m])) continue;
         casan++;
         if (!alreadySent[messages[m].getId()]) nuevos++;
       }
@@ -385,6 +470,8 @@ function processThreads_(threads, config, label, state) {
 
     // Por HILO, no global: que falle un hilo no debe impedir marcar los demas.
     var threadFailed = 0;
+    // Que proveedores aparecieron en este hilo, para etiquetarlo con el suyo.
+    var threadProviders = {};
 
     for (var m = 0; m < messages.length; m++) {
       var message = messages[m];
@@ -396,13 +483,15 @@ function processThreads_(threads, config, label, state) {
       }
 
       // Un hilo puede mezclar correos que casan con la busqueda y otros que no.
-      if (!looksLikeBcpEmail_(message)) continue;
+      var provider = providerForMessage_(message);
+      if (!provider) continue;
 
       if (sendMessage_(message, thread, config)) {
         state.sent++;
         state.pending++;
         state.alreadySent[messageId] = true;
         state.sentIds.push(messageId);
+        threadProviders[provider.id] = provider;
       } else {
         threadFailed++;
         state.failed++;
@@ -410,7 +499,15 @@ function processThreads_(threads, config, label, state) {
     }
 
     if (threadFailed === 0) {
-      thread.addLabel(label);
+      // Con PROCESSED_LABEL configurada manda esa para todos; sin ella, cada
+      // hilo lleva la de su proveedor y en Gmail se distinguen de un vistazo.
+      if (label) {
+        thread.addLabel(label);
+      } else {
+        for (var id in threadProviders) {
+          thread.addLabel(getOrCreateLabel_(threadProviders[id].label));
+        }
+      }
     }
   }
 }
@@ -534,37 +631,40 @@ function buildHeaders_(config) {
 }
 
 /**
- * Frases que identifican un correo que la API sabe interpretar.
- *
- * Sin tildes ni mayúsculas, porque así se comparan abajo. Deben coincidir con
- * los marcadores de los parsers de `lib/parsers/`: si aquí falta uno, el correo
- * se descarta antes de salir de Gmail; si sobra, la API responde PARSE_ERROR y
- * el correo queda guardado igualmente para reprocesarlo.
- */
-var BCP_BODY_MARKERS = [
-  'realizaste un consumo',
-  'realizaste una compra',
-  'pago de servicios',
-  'realizaste una transferencia'
-];
-
-/**
  * Segundo filtro, ya con el mensaje en la mano.
  *
- * La búsqueda de Gmail trabaja por hilos, así que puede devolver un hilo entero
- * por culpa de un solo mensaje. Esto comprueba mensaje a mensaje.
+ * La búsqueda de Gmail trabaja por HILOS, así que puede devolver un hilo entero
+ * por culpa de un solo mensaje. Esto comprueba mensaje a mensaje, y devuelve el
+ * proveedor que lo reconoce o `null`.
+ *
+ * SE EXIGEN LAS DOS COSAS: remitente Y frase. El remitente solo no basta porque
+ * el mismo banco manda publicidad y extractos; la frase sola tampoco, porque
+ * cualquiera puede escribir «realizaste un consumo» en un correo. Pedir las dos
+ * es lo que impide que ampliar la búsqueda a Yape acabe registrando correos que
+ * no son operaciones.
+ *
+ * Las comparaciones van en minúsculas. No se quitan tildes porque los
+ * marcadores no llevan ninguna; si algún día la llevan, hay que normalizar aquí.
  */
-function looksLikeBcpEmail_(message) {
+function providerForMessage_(message) {
   var from = String(message.getFrom()).toLowerCase();
-  if (from.indexOf('notificacionesbcp.com.pe') === -1) return false;
-
   var body = String(message.getPlainBody()).toLowerCase();
 
-  for (var i = 0; i < BCP_BODY_MARKERS.length; i++) {
-    if (body.indexOf(BCP_BODY_MARKERS[i]) !== -1) return true;
+  for (var i = 0; i < PROVIDERS.length; i++) {
+    var provider = PROVIDERS[i];
+    if (from.indexOf(provider.sender) === -1) continue;
+
+    for (var m = 0; m < provider.markers.length; m++) {
+      if (body.indexOf(provider.markers[m]) !== -1) return provider;
+    }
   }
 
-  return false;
+  return null;
+}
+
+/** ¿Hay algún proveedor que sepa leer este mensaje? */
+function looksLikeSupportedEmail_(message) {
+  return providerForMessage_(message) !== null;
 }
 
 /* ========================================================================== */
@@ -593,7 +693,11 @@ function getConfig_() {
     apiUrl: properties.getProperty('API_URL'),
     ingestKey: properties.getProperty('INGEST_KEY'),
     gmailQuery: properties.getProperty('GMAIL_QUERY') || DEFAULT_GMAIL_QUERY,
-    processedLabel: properties.getProperty('PROCESSED_LABEL') || DEFAULT_PROCESSED_LABEL,
+    // Vacia a proposito cuando no esta configurada: asi `processThreads_` usa
+    // la etiqueta de cada proveedor en vez de meter los yapeos en
+    // «BCP-Ingestado». DEFAULT_PROCESSED_LABEL queda solo como referencia
+    // documental del nombre que se usaba antes.
+    processedLabel: properties.getProperty('PROCESSED_LABEL') || '',
     // Opcional: solo si dejas activa la Deployment Protection de Vercel.
     vercelBypass: properties.getProperty('VERCEL_BYPASS') || ''
   };
@@ -601,6 +705,9 @@ function getConfig_() {
 
 /** Devuelve la etiqueta, creándola la primera vez. */
 function getOrCreateLabel_(name) {
+  // Sin nombre no hay etiqueta comun: la pone `processThreads_` por proveedor.
+  if (!name) return null;
+
   return GmailApp.getUserLabelByName(name) || GmailApp.createLabel(name);
 }
 
@@ -689,6 +796,61 @@ function testConnection() {
 }
 
 /**
+ * Como previewSearch, pero con una ventana de días ELEGIDA POR TI en vez de la
+ * de GMAIL_QUERY (que suelen ser los 2 días fijos del trigger).
+ *
+ * NUNCA ENVÍA NADA: solo GmailApp.search() y Logger.log(). No hay una sola
+ * llamada a UrlFetchApp aquí dentro, así que no puede llegar ni un byte a la
+ * API ni a la base de datos por mucho que la ventana sea de 90 días.
+ *
+ * Para qué sirve en concreto: quieres saber si YA hay algún correo de Yape en
+ * tu bandeja más allá de los últimos 2 días —por ejemplo, de la semana
+ * pasada—, sin esperar a que llegue uno nuevo y sin tocar GMAIL_QUERY ni
+ * ninguna Propiedad del script.
+ *
+ * USO: en el desplegable de funciones (arriba, junto a ▶ Ejecutar) escribe
+ * `previewWindow` y pulsa el lápiz para editar los argumentos, o simplemente
+ * cambia el `30` de abajo y ejecuta `previewWindow` directamente — con un solo
+ * clic ejecuta la función tal cual está escrita, con el valor que le hayas
+ * puesto al argumento por defecto.
+ *
+ * @param {number} days Cuántos días atrás buscar. 30 por defecto.
+ */
+function previewWindow(days) {
+  days = days || 30;
+
+  var query = PROVIDER_SEARCH_BASE + ' newer_than:' + days + 'd';
+  var threads = GmailApp.search(query, 0, 50);
+
+  Logger.log('Búsqueda: ' + query);
+  Logger.log('Hilos encontrados: ' + threads.length + ' (tope 50 en esta prueba)');
+  Logger.log('----------------------------------------');
+
+  var porProveedor = {};
+
+  for (var t = 0; t < threads.length; t++) {
+    var messages = threads[t].getMessages();
+    for (var m = 0; m < messages.length; m++) {
+      var message = messages[m];
+      var provider = providerForMessage_(message);
+      var id = provider ? provider.id : 'ninguno';
+
+      porProveedor[id] = (porProveedor[id] || 0) + 1;
+
+      Logger.log(
+        '- [' + message.getDate() + '] ' + message.getFrom() +
+        ' | ' + message.getSubject() +
+        ' | proveedor: ' + id
+      );
+    }
+  }
+
+  Logger.log('----------------------------------------');
+  Logger.log('Resumen por proveedor: ' + JSON.stringify(porProveedor));
+  Logger.log('No se ha enviado nada a ninguna API. Esto es solo lectura de Gmail.');
+}
+
+/**
  * Muestra qué correos encontraría la búsqueda, SIN enviar nada.
  * Úsala para afinar GMAIL_QUERY antes de activar el trigger.
  */
@@ -706,36 +868,102 @@ function previewSearch() {
       Logger.log(
         '- [' + message.getDate() + '] ' + message.getFrom() +
         ' | ' + message.getSubject() +
-        ' | casa: ' + looksLikeBcpEmail_(message)
+        ' | proveedor: ' + (providerForMessage_(message) ? providerForMessage_(message).id : 'ninguno')
       );
     }
   }
 }
 
 /**
- * Vuelca el texto plano del correo del BCP más reciente.
+ * Vuelca el texto plano del correo más reciente que casa con GMAIL_QUERY (los
+ * últimos 2 días).
+ *
+ * SOLO LECTURA: GmailApp.search() y Logger.log(), nada más. No envía nada a
+ * ninguna API ni a ninguna base de datos.
  *
  * Es la forma de obtener una muestra REAL para el parser: ejecútala, copia el
- * texto del log a un archivo `.txt` y pruébalo con
- * `npm run parse:sample -- ruta/al/archivo.txt`.
+ * texto del log entre las dos rayas a un archivo `.txt` y pruébalo con
+ * `npm run parse:sample -- ruta/al/archivo.txt` en tu máquina. Eso te dice
+ * EXACTAMENTE qué guardaría la base de datos, sin haber tocado la base de
+ * datos.
+ *
+ * Si el correo que buscas tiene más de 2 días, usa `dumpEmailBody(dias)` en su
+ * lugar.
  */
 function dumpLatestEmailBody() {
-  var config = getConfig_();
-  var threads = GmailApp.search(config.gmailQuery, 0, 1);
+  dumpEmailBody(2);
+}
+
+/**
+ * Como dumpLatestEmailBody, pero con la ventana de días que tú elijas y,
+ * opcionalmente, UN SOLO proveedor.
+ *
+ * SIN `providerId`, coge el correo más reciente de CUALQUIER proveedor. Si
+ * tienes un BCP más nuevo que el Yape que buscas, el BCP gana y nunca ves el
+ * Yape aunque esté dentro de la ventana — por eso existe el filtro.
+ *
+ * Útil tras usar `previewWindow(dias)` para localizar un correo antiguo: pon
+ * aquí la misma ventana y el id del proveedor que viste en su línea
+ * (`YAPE` o `BCP`) y volcará el más reciente de ESE proveedor dentro del rango.
+ *
+ * SOLO LECTURA, igual que previewWindow: ni un solo UrlFetchApp.fetch en esta
+ * función. Puedes ejecutarla con total tranquilidad, no crea nada en ningún
+ * sitio.
+ *
+ * @param {number} days Cuántos días atrás buscar. 2 por defecto.
+ * @param {string} [providerId] 'YAPE' o 'BCP'. Sin especificar, cualquiera.
+ */
+function dumpEmailBody(days, providerId) {
+  days = days || 2;
+
+  var provider = null;
+  if (providerId) {
+    for (var i = 0; i < PROVIDERS.length; i++) {
+      if (PROVIDERS[i].id === providerId) provider = PROVIDERS[i];
+    }
+    if (!provider) {
+      Logger.log('providerId desconocido: ' + providerId + '. Usa YAPE o BCP.');
+      return;
+    }
+  }
+
+  // Con provider fijado, la búsqueda se acota a SU remitente y SUS frases, no
+  // a las de todos: es la misma construcción que buildProviderQuery_ pero para
+  // uno solo, así el BCP no puede tapar al Yape ni al revés.
+  var base = provider
+    ? '(from:' + provider.sender + ' ("' + provider.markers.join('" OR "') + '"))'
+    : PROVIDER_SEARCH_BASE;
+
+  var query = base + ' newer_than:' + days + 'd';
+  var threads = GmailApp.search(query, 0, 1);
 
   if (threads.length === 0) {
-    Logger.log('No se encontró ningún correo con: ' + config.gmailQuery);
+    Logger.log('No se encontró ningún correo con: ' + query);
+    if (provider) {
+      Logger.log('Prueba con más días, o ejecuta previewWindow(dias) para confirmar que existe.');
+    }
     return;
   }
 
   var messages = threads[0].getMessages();
   var message = messages[messages.length - 1];
+  var detected = providerForMessage_(message);
 
-  Logger.log('From:    ' + message.getFrom());
-  Logger.log('To:      ' + message.getTo());
-  Logger.log('Subject: ' + message.getSubject());
-  Logger.log('Date:    ' + message.getDate().toISOString());
-  Logger.log('----- INICIO DEL TEXTO PLANO -----');
+  Logger.log('From:      ' + message.getFrom());
+  Logger.log('To:        ' + message.getTo());
+  Logger.log('Subject:   ' + message.getSubject());
+  Logger.log('Date:      ' + message.getDate().toISOString());
+  Logger.log('Proveedor: ' + (detected ? detected.id : 'ninguno'));
+  Logger.log('----- INICIO DEL TEXTO PLANO (copia desde aquí) -----');
   Logger.log(message.getPlainBody());
   Logger.log('----- FIN DEL TEXTO PLANO -----');
+  Logger.log('');
+  Logger.log('Pega ese texto en un .txt y ejecuta en tu máquina:');
+  Logger.log('  npm run parse:sample -- ruta/al/archivo.txt');
+  Logger.log('Eso muestra EXACTAMENTE lo que se guardaría, sin enviar nada.');
+}
+
+/** Atajo: dumpEmailBody(dias, 'YAPE'). Cambia el 30 si hace falta. */
+function dumpYapeBody() {
+  dumpEmailBody(30, 'YAPE');
 }
