@@ -57,6 +57,21 @@ export const MovementSchema = z.object({
 
   operationNumber: z.string().trim().max(60).default(""),
   comment: z.string().trim().max(500).default(""),
+
+  /**
+   * ¿Participa en los cálculos?
+   *
+   * Llega como el valor de una casilla, y una casilla SIN MARCAR no se envía:
+   * el campo simplemente no aparece en el `FormData`. Por eso el valor por
+   * defecto es `false` aquí y quien pone el `true` inicial es el formulario,
+   * que nace con la casilla marcada. Al revés —`default(true)`— sería
+   * imposible desmarcarla: el servidor no podría distinguir «no marcada» de
+   * «no enviada».
+   */
+  contabilizar: z
+    .union([z.literal("on"), z.literal("true"), z.literal("false"), z.literal("")])
+    .default("")
+    .transform((value) => value === "on" || value === "true"),
 });
 
 export type MovementInput = z.input<typeof MovementSchema>;
@@ -72,6 +87,7 @@ export interface MovementRecord {
   amount: number;
   operation_number: string | null;
   comment: string | null;
+  contabilizar: boolean;
 }
 
 /**
@@ -92,6 +108,7 @@ export function toMovementRecord(input: MovementParsed): MovementRecord {
     amount: Math.round(input.amount * 100) / 100,
     operation_number: input.operationNumber === "" ? null : input.operationNumber,
     comment: input.comment === "" ? null : input.comment,
+    contabilizar: input.contabilizar,
   };
 }
 
@@ -117,6 +134,8 @@ export function parseMovementForm(formData: FormData) {
     amount: formData.get("amount") ?? "",
     operationNumber: formData.get("operationNumber") ?? "",
     comment: formData.get("comment") ?? "",
+    // Ausente = casilla desmarcada. Ver la nota del campo en el esquema.
+    contabilizar: formData.get("contabilizar") ?? "",
   });
 }
 

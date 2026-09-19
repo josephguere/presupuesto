@@ -370,3 +370,87 @@ create trigger set_updated_at
 -- ---------------------------------------------------------------------------
 alter table public.email_ingestions enable row level security;
 alter table public.transactions     enable row level security;
+
+-- ---------------------------------------------------------------------------
+--  3.10. Contabilizar — participar o no en los cálculos
+--
+--  ES INDEPENDIENTE DE `activo`, y esa separación es el motivo de que exista una
+--  columna nueva en lugar de reutilizar la baja lógica. Son dos preguntas
+--  distintas sobre un mismo movimiento:
+--
+--      activo = false        el movimiento está EN LA PAPELERA. No se lista,
+--                            no se edita, solo se puede restaurar.
+--
+--      contabilizar = false  el movimiento EXISTE y es editable, pero no suma
+--                            en el resumen, en los totales ni en las metas.
+--                            Sirve para un traspaso entre cuentas propias, un
+--                            reembolso o un gasto que otro devuelve.
+--
+--  Mezclarlos obligaría a eliminar un movimiento para dejar de contarlo, y
+--  entonces desaparecería de Movimientos, que es justo lo que no se quiere.
+--
+--  `not null default true` rellena las filas existentes en el mismo ALTER: todo
+--  lo que hay hoy queda contabilizado, que es como se ha venido calculando hasta
+--  ahora. No se reescribe ni se pierde ningún dato.
+-- ---------------------------------------------------------------------------
+alter table public.transactions
+  add column if not exists contabilizar boolean not null default true;
+
+comment on column public.transactions.contabilizar is
+  'Participa en resumen, totales y metas. Independiente de `activo` (papelera).';
+
+-- Resumen, Movimientos y Metas filtran por esta columna en cada consulta.
+create index if not exists transactions_contabilizar_idx
+  on public.transactions (contabilizar);
+
+-- ---------------------------------------------------------------------------
+--  3.11. category_goals — metas de gasto mensual por categoría
+--
+--  POR QUÉ LA CATEGORÍA VA COMO TEXTO Y NO COMO CLAVE AJENA: en este proyecto no
+--  existe una tabla de categorías. La jerarquía GRUPO > CATEGORÍA RESUMEN >
+--  CATEGORÍA vive en `lib/categories.ts` y se deriva al leer, precisamente para
+--  poder reagrupar sin migración. `transactions.category` ya es `text` por el
+--  mismo motivo, así que la meta usa el mismo tipo y las dos se emparejan por
+--  igualdad exacta. Añadir aquí una clave ajena exigiría inventar la tabla que
+--  el modelo evita a propósito.
+--
+--  `is_test` entra en la clave única a propósito: local y producción comparten
+--  base de datos, así que sin él una meta creada en desarrollo bloquearía la
+--  de producción para la misma categoría y mes.
+-- ---------------------------------------------------------------------------
+create table if not exists public.category_goals (
+  id         uuid primary key default gen_random_uuid(),
+
+  category   text not null,
+  year       smallint not null,
+  month      smallint not null,
+  amount     numeric(12, 2) not null,
+
+  is_test    boolean not null default false,
+
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+
+  constraint category_goals_month_check  check (month between 1 and 12),
+  constraint category_goals_year_check   check (year between 2000 and 2100),
+  constraint category_goals_amount_check check (amount > 0),
+
+  -- Una sola meta por categoría y mes. Es lo que hace que guardar dos veces
+  -- ACTUALICE en lugar de duplicar, sin que la aplicación tenga que comprobarlo.
+  constraint category_goals_unique unique (category, year, month, is_test)
+);
+
+comment on table public.category_goals is
+  'Meta de gasto por categoría y mes. La categoría es texto: no hay tabla de categorías.';
+
+-- La pantalla pide siempre «las metas de este mes».
+create index if not exists category_goals_period_idx
+  on public.category_goals (year, month);
+
+drop trigger if exists set_updated_at on public.category_goals;
+create trigger set_updated_at
+  before update on public.category_goals
+  for each row execute function public.set_updated_at();
+
+-- Misma postura que el resto: cerrado por defecto, solo la service_role entra.
+alter table public.category_goals enable row level security;

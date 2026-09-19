@@ -71,7 +71,17 @@ export default async function EliminadosPage(props: PageProps<"/eliminados">) {
         <SetupNotice message={error} />
       ) : (
         <>
-          <FiltersBar action="/eliminados" months={months} values={raw} mode={mode} />
+          {/* Sin el filtro de contabilizacion: en la papelera se ven TODAS las
+              bajas, cuenten o no. Un movimiento eliminado y ademas no
+              contabilizado desapareceria de la unica pantalla donde se puede
+              recuperar. */}
+          <FiltersBar
+            action="/eliminados"
+            months={months}
+            values={raw}
+            mode={mode}
+            showAccounting={false}
+          />
           <TransactionsTable
             transactions={transactions}
             actions="restore"

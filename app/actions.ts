@@ -114,6 +114,7 @@ export async function createMovement(formData: FormData): Promise<ActionResult> 
     logger.info("action.movement.created", {
       transactionId: data.id,
       category: record.category,
+      contabilizar: record.contabilizar,
       // El grupo se registra por trazabilidad; no se guarda como columna.
       group: resolveGroup(parsed.data),
     });
@@ -173,6 +174,7 @@ export async function updateMovement(
     logger.info("action.movement.updated", {
       transactionId,
       category: parsed.data.category,
+      contabilizar: parsed.data.contabilizar,
       group: resolveGroup(parsed.data),
     });
 
@@ -211,6 +213,10 @@ export async function deleteMovement(transactionId: string): Promise<ActionResul
  * Es un UPDATE sobre la MISMA fila: mismo id, misma fecha, mismo importe. No se
  * inserta nada, así que el movimiento vuelve a los listados y a los indicadores
  * exactamente como estaba.
+ *
+ * NO se toca `contabilizar`: si estaba sin contabilizar antes de eliminarlo,
+ * vuelve sin contabilizar. Son dos decisiones distintas del usuario y restaurar
+ * no revoca ninguna de las dos.
  */
 export async function restoreMovement(transactionId: string): Promise<ActionResult> {
   return setActive(transactionId, true);
@@ -255,5 +261,73 @@ async function setActive(transactionId: string, activo: boolean): Promise<Action
     const message = describeError(error);
     logger.error(`action.movement.${accion}_failed`, { transactionId, error: message });
     return { ok: false, message: `No se pudo ${accion} el movimiento.` };
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Borrado definitivo                                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Borra un movimiento de verdad. **Esto no se puede deshacer.**
+ *
+ * Es la única escritura de todo el proyecto que hace un DELETE sobre
+ * `transactions`; todo lo demás es baja lógica. Por eso lleva dos cerraduras que
+ * no tiene ninguna otra acción:
+ *
+ *   1. SOLO SE PUEDE PURGAR LO QUE YA ESTÁ EN LA PAPELERA. El `eq("activo",
+ *      false)` va en la propia sentencia, así que un movimiento vivo no se
+ *      puede borrar ni invocando la acción a mano con su id. Sin eso, un
+ *      endpoint público —que es lo que es una Server Action— permitiría
+ *      destruir un movimiento activo de un solo tiro.
+ *
+ *   2. Se comprueba que haya borrado ALGO. Si la fila no existía, o estaba
+ *      activa, `count` vuelve a 0 y se devuelve un error en vez de un «listo»
+ *      que mentiría.
+ *
+ * EL CORREO DE ORIGEN NO SE TOCA. `email_ingestions` conserva el mensaje crudo
+ * como evidencia, y se queda en estado PROCESSED. Eso tiene una consecuencia
+ * buscada: si Apps Script vuelve a mandar ese correo, la API responde
+ * ALREADY_PROCESSED y NO recrea el movimiento. Borrar para siempre significa
+ * para siempre, también frente a un reprocesado.
+ */
+export async function purgeMovement(transactionId: string): Promise<ActionResult> {
+  const denied = await requireSession();
+  if (denied) return denied;
+
+  if (!UuidSchema.safeParse(transactionId).success) {
+    return { ok: false, message: "Movimiento no válido." };
+  }
+
+  if (!isSupabaseConfigured()) {
+    return { ok: false, message: "Falta la configuración de Supabase." };
+  }
+
+  try {
+    const { error, count } = await getSupabaseAdmin()
+      .from("transactions")
+      .delete({ count: "exact" })
+      .eq("id", transactionId)
+      // La cerradura: solo lo que ya está en la papelera.
+      .eq("activo", false);
+
+    if (error) throw new Error(error.message);
+
+    if (!count) {
+      logger.warn("action.movement.purge_rejected", { transactionId });
+      return {
+        ok: false,
+        message: "Solo se puede eliminar para siempre un movimiento que ya está en Eliminados.",
+      };
+    }
+
+    logger.info("action.movement.purged", { transactionId });
+
+    revalidateViews();
+    return { ok: true };
+  } catch (error) {
+    const message = describeError(error);
+    logger.error("action.movement.purge_failed", { transactionId, error: message });
+    return { ok: false, message: "No se pudo eliminar el movimiento." };
   }
 }

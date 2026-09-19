@@ -45,6 +45,7 @@ const SUMMARY_TO_GROUP = {
   "Servicios del hogar": "GASTOS FIJOS",
   Educación: "GASTOS FIJOS",
   "Seguros e impuestos": "GASTOS FIJOS",
+  Remesa: "GASTOS FIJOS",
 
   Alimentación: "GASTOS VARIABLES",
   Movilidad: "GASTOS VARIABLES",
@@ -54,6 +55,8 @@ const SUMMARY_TO_GROUP = {
   Hogar: "GASTOS VARIABLES",
   "Compras personales": "GASTOS VARIABLES",
   "Tecnología y compras": "GASTOS VARIABLES",
+  Viajes: "GASTOS VARIABLES",
+  "Finanzas personales": "GASTOS VARIABLES",
   Regalos: "GASTOS VARIABLES",
   Transferencias: "GASTOS VARIABLES",
   Otros: "GASTOS VARIABLES",
@@ -78,12 +81,18 @@ const CATEGORY_TO_SUMMARY = {
   Servicios: "Servicios del hogar",
   Luz: "Servicios del hogar",
   "Gas Cálidda": "Servicios del hogar",
+  Internet: "Servicios del hogar",
   Mantenimiento: "Servicios del hogar",
 
   Educación: "Educación",
+  "Cursos y capacitación": "Educación",
 
   Seguros: "Seguros e impuestos",
   "Impuestos y tributos": "Seguros e impuestos",
+
+  // Envío periódico de dinero. Va en GASTOS FIJOS porque se repite todos los
+  // meses; el nombre lo fijó el usuario y se conserva literal.
+  "Pago Lley": "Remesa",
 
   Supermercado: "Alimentación",
   Restaurantes: "Alimentación",
@@ -102,13 +111,20 @@ const CATEGORY_TO_SUMMARY = {
   "Cuidado personal": "Salud y bienestar",
 
   Entretenimiento: "Entretenimiento",
+  Videojuegos: "Entretenimiento",
+  "Actividades infantiles": "Entretenimiento",
 
   Hogar: "Hogar",
 
   Ropa: "Compras personales",
+  "Accesorios y joyería": "Compras personales",
 
   Tecnología: "Tecnología y compras",
   "Compras online": "Tecnología y compras",
+
+  Viajes: "Viajes",
+
+  "Préstamos y deudas": "Finanzas personales",
 
   Regalos: "Regalos",
 

@@ -92,7 +92,7 @@ describe("el orden convive con los filtros", () => {
 
     expect(parsed.sort).toBe("monto-desc");
     expect(parsed.filters.month).toBe("2026-08");
-    expect(parsed.filters.summary).toBe("Alimentación");
+    expect(parsed.filters.summaries).toEqual(["Alimentación"]);
   });
 
   it("sin parámetro `orden`, los filtros no se ven afectados", () => {

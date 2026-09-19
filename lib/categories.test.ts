@@ -20,7 +20,7 @@ describe("catálogo de categorías", () => {
     expect(new Set(CATEGORIES).size).toBe(CATEGORIES.length);
   });
 
-  it("contiene las 29 categorías acordadas", () => {
+  it("contiene las 37 categorías acordadas", () => {
     expect(CATEGORIES).toEqual([
       "Ingresos",
 
@@ -29,12 +29,16 @@ describe("catálogo de categorías", () => {
       "Servicios",
       "Luz",
       "Gas Cálidda",
+      "Internet",
       "Mantenimiento",
 
       "Educación",
+      "Cursos y capacitación",
 
       "Seguros",
       "Impuestos y tributos",
+
+      "Pago Lley",
 
       "Supermercado",
       "Restaurantes",
@@ -53,16 +57,53 @@ describe("catálogo de categorías", () => {
       "Cuidado personal",
 
       "Entretenimiento",
+      "Videojuegos",
+      "Actividades infantiles",
+
       "Hogar",
+
       "Ropa",
+      "Accesorios y joyería",
 
       "Tecnología",
       "Compras online",
+
+      "Viajes",
+
+      "Préstamos y deudas",
 
       "Regalos",
       "Transferencias",
       "Otros",
     ]);
+  });
+
+  it("las ocho categorías nuevas cuelgan de donde deben", () => {
+    // La tabla exacta del acuerdo, fila por fila.
+    const acuerdo: Array<[string, string, string]> = [
+      ["Videojuegos", "Entretenimiento", "GASTOS VARIABLES"],
+      ["Actividades infantiles", "Entretenimiento", "GASTOS VARIABLES"],
+      ["Accesorios y joyería", "Compras personales", "GASTOS VARIABLES"],
+      ["Internet", "Servicios del hogar", "GASTOS FIJOS"],
+      ["Cursos y capacitación", "Educación", "GASTOS FIJOS"],
+      ["Viajes", "Viajes", "GASTOS VARIABLES"],
+      ["Préstamos y deudas", "Finanzas personales", "GASTOS VARIABLES"],
+      ["Pago Lley", "Remesa", "GASTOS FIJOS"],
+    ];
+
+    for (const [categoria, resumen, grupo] of acuerdo) {
+      expect(isValidCategory(categoria)).toBe(true);
+      expect(getSummaryForCategory(categoria)).toBe(resumen);
+      expect(getGroupForCategory(categoria)).toBe(grupo);
+    }
+  });
+
+  it("«Pago Lley» se escribe exactamente así", () => {
+    // Lo fijó el usuario. Si alguien lo «corrige», esto lo para: renombrarlo
+    // dejaría huérfanos los movimientos ya clasificados con el nombre viejo.
+    expect(CATEGORIES).toContain("Pago Lley");
+    expect(CATEGORIES).not.toContain("Pago LLey");
+    expect(CATEGORIES).not.toContain("Pago lley");
   });
 
   it("conserva las 17 categorías originales", () => {
@@ -202,16 +243,19 @@ describe("grupo → categorías", () => {
     expect(getCategoriesInGroup("INGRESOS")).toEqual(["Ingresos"]);
   });
 
-  it("GASTOS FIJOS son los ocho acordados", () => {
+  it("GASTOS FIJOS son los once acordados", () => {
     expect(getCategoriesInGroup("GASTOS FIJOS")).toEqual([
       "Suscripciones",
       "Servicios",
       "Luz",
       "Gas Cálidda",
+      "Internet",
       "Mantenimiento",
       "Educación",
+      "Cursos y capacitación",
       "Seguros",
       "Impuestos y tributos",
+      "Pago Lley",
     ]);
   });
 
@@ -255,6 +299,15 @@ describe("categoría resumen", () => {
       ["Luz", "Servicios del hogar"],
       ["Gas Cálidda", "Servicios del hogar"],
       ["Mantenimiento", "Servicios del hogar"],
+      // Las ocho del último acuerdo.
+      ["Internet", "Servicios del hogar"],
+      ["Cursos y capacitación", "Educación"],
+      ["Pago Lley", "Remesa"],
+      ["Videojuegos", "Entretenimiento"],
+      ["Actividades infantiles", "Entretenimiento"],
+      ["Accesorios y joyería", "Compras personales"],
+      ["Viajes", "Viajes"],
+      ["Préstamos y deudas", "Finanzas personales"],
     ] as const;
 
     expect(mapeo).toHaveLength(CATEGORIES.length);
@@ -311,9 +364,10 @@ describe("categoría resumen", () => {
     }
   });
 
-  it("«Servicios del hogar» agrupa las cuatro del acuerdo", () => {
+  it("«Servicios del hogar» agrupa las cinco del acuerdo", () => {
     expect(getCategoriesInSummary("Servicios del hogar").sort()).toEqual([
       "Gas Cálidda",
+      "Internet",
       "Luz",
       "Mantenimiento",
       "Servicios",

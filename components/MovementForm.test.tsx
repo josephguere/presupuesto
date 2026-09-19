@@ -38,6 +38,7 @@ function movement(overrides: Partial<Transaction> = {}): Transaction {
     summary: getSummaryForCategory("Transporte"),
     group: "GASTOS VARIABLES",
     origin: "EMAIL",
+    contabilizar: true,
     deletedAt: null,
     ...overrides,
   };

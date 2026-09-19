@@ -44,7 +44,7 @@ const MAX_ROWS = 1000;
 
 const COLUMNS =
   "id, bank, operation_type, transaction_at, amount, currency, merchant, " +
-  "card_last4, operation_number, category, comment, origin, eliminado_at";
+  "card_last4, operation_number, category, comment, origin, contabilizar, eliminado_at";
 
 /**
  * Qué movimientos pedir segun su baja logica.
@@ -117,24 +117,50 @@ function getCustomRange(from?: string, to?: string): { from?: string; to?: strin
 /* Filtros                                                                     */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Estados del filtro de contabilización.
+ *
+ * Son los dos valores del desplegable con casillas. Ausente = el de por defecto,
+ * que es enseñar solo lo que cuenta.
+ */
+export const ACCOUNTING_VALUES = ["contabilizados", "no-contabilizados"] as const;
+
+export type AccountingValue = (typeof ACCOUNTING_VALUES)[number];
+
 export interface TransactionFilters {
   /** Mes `YYYY-MM`. Se ignora si hay rango personalizado. */
   month?: string;
   /** Rango personalizado `YYYY-MM-DD`. Tiene prioridad sobre `month`. */
   from?: string;
   to?: string;
-  category?: Category;
-  /** `true` para quedarse solo con los que no tienen categoría. */
+  /**
+   * Categorías seleccionadas. Vacío o ausente = sin restricción.
+   *
+   * Los tres niveles son listas desde que los filtros admiten varias opciones.
+   * Se combinan por INTERSECCIÓN entre niveles y por UNIÓN dentro de cada uno:
+   * «resumen ∈ {A,B} Y categoría ∈ {X,Y}». Ver `resolveCategoryFilter`.
+   */
+  categories?: Category[];
+  /** `true` si se pidió explícitamente «Sin categoría». */
   uncategorized?: boolean;
-  /** Nivel intermedio: filtra por todas las categorías que agrupa. */
-  summary?: SummaryCategory;
-  group?: Group;
+  /** Nivel intermedio: filtra por todas las categorías que agrupan. */
+  summaries?: SummaryCategory[];
+  groups?: Group[];
   merchant?: string;
   limit?: number;
   /** Por defecto `activos`: un movimiento eliminado no existe para el resto. */
   status?: TransactionStatus;
   /** Por defecto, lo más reciente primero. */
   sort?: MovementSort;
+  /**
+   * Qué estados de contabilización mostrar.
+   *
+   * Ausente significa **solo los contabilizados**, que es lo que espera quien
+   * abre la aplicación. Los dos valores a la vez muestran ambos.
+   *
+   * No se aplica en la papelera: ver `getTransactions`.
+   */
+  accounting?: AccountingValue[];
 }
 
 /** ¿Está el usuario filtrando por rango personalizado en vez de por mes? */
@@ -158,9 +184,11 @@ export interface ParsedFilters {
     month?: string;
     from?: string;
     to?: string;
-    category?: string;
-    summary?: string;
-    group?: string;
+    /** Listas, porque los tres combos admiten varias opciones a la vez. */
+    categories: string[];
+    summaries: string[];
+    groups: string[];
+    accounting: string[];
   };
   mode: "month" | "range";
   /**
@@ -184,9 +212,15 @@ export function parseFilters(
   const from = one(params.desde);
   const to = one(params.hasta);
   const monthParam = one(params.mes);
-  const categoryParam = one(params.categoria);
-  const summaryParam = one(params.categoriaResumen);
-  const groupParam = one(params.grupo);
+
+  // Los tres niveles llegan como parametros REPETIDOS
+  // (`?categoria=A&categoria=B`), que es lo que envia un grupo de casillas con
+  // el mismo `name`. Una URL antigua con un solo valor sigue funcionando: es
+  // una lista de uno.
+  const categoryParams = manyValues(params.categoria);
+  const summaryParams = manyValues(params.categoriaResumen);
+  const groupParams = manyValues(params.grupo);
+  const accountingParams = manyValues(params.contab);
 
   const mode: "month" | "range" = usesCustomRange({ from, to }) ? "range" : "month";
   const month = isValidMonth(monthParam) ? monthParam : undefined;
@@ -200,12 +234,20 @@ export function parseFilters(
     filters.month = month;
   }
 
-  if (categoryParam === UNCATEGORIZED_FILTER) filters.uncategorized = true;
-  else if (isValidCategory(categoryParam)) filters.category = categoryParam;
+  // Lo que no esta en el catalogo se descarta en silencio: una URL manipulada
+  // produce como mucho una vista sin filtrar, nunca una consulta invalida.
+  const categories = categoryParams.filter(isValidCategory);
+  if (categories.length > 0) filters.categories = categories;
+  if (categoryParams.includes(UNCATEGORIZED_FILTER)) filters.uncategorized = true;
 
-  if (isValidSummaryCategory(summaryParam)) filters.summary = summaryParam;
+  const summaries = summaryParams.filter(isValidSummaryCategory);
+  if (summaries.length > 0) filters.summaries = summaries;
 
-  if (isValidGroup(groupParam)) filters.group = groupParam;
+  const groups = groupParams.filter(isValidGroup);
+  if (groups.length > 0) filters.groups = groups;
+
+  const accounting = accountingParams.filter(isAccountingValue);
+  if (accounting.length > 0) filters.accounting = accounting;
 
   const sort = parseMovementSort(params.orden);
   if (sort !== DEFAULT_MOVEMENT_SORT) filters.sort = sort;
@@ -216,21 +258,114 @@ export function parseFilters(
       month: month,
       from: isValidDate(from) ? from : undefined,
       to: isValidDate(to) ? to : undefined,
-      category: categoryParam,
-      summary: summaryParam,
-      group: groupParam,
+      // Se devuelven los valores ACEPTADOS, no los crudos: asi el formulario se
+      // repinta con lo que de verdad se aplico y no con lo que se ignoro.
+      categories: [
+        ...categories,
+        ...(filters.uncategorized ? [UNCATEGORIZED_FILTER] : []),
+      ],
+      summaries,
+      groups,
+      accounting,
     },
     mode,
-    // `mes=` vacío es la opción «Todos los meses» del desplegable. Un `mes`
-    // inválido no cuenta: se trata como si no viniera y se aplica el mes actual.
     allMonths: firstValue(params.mes) === "",
     sort,
   };
 }
 
-/** Primer valor de un parámetro repetido, sin convertir la cadena vacía. */
+/** Primer valor de un parametro repetido, sin convertir la cadena vacia. */
 function firstValue(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
+}
+
+/**
+ * Todos los valores de un parametro, venga repetido o suelto.
+ *
+ * Las cadenas vacias se descartan: el formulario envia un campo oculto para
+ * declarar «este filtro existe aunque no haya nada marcado», y ese centinela no
+ * es un valor seleccionable.
+ */
+function manyValues(value: string | string[] | undefined): string[] {
+  if (value === undefined) return [];
+  const list = Array.isArray(value) ? value : [value];
+  return list.filter((item) => item.trim().length > 0);
+}
+
+/** Es uno de los dos estados de contabilizacion? */
+export function isAccountingValue(value: unknown): value is AccountingValue {
+  return typeof value === "string" && (ACCOUNTING_VALUES as readonly string[]).includes(value);
+}
+
+/**
+ * Que categorias admite la combinacion de los tres niveles.
+ *
+ * PURO, y por eso vive separado de la consulta: la regla —interseccion entre
+ * niveles, union dentro de cada uno— es lo unico delicado de todo el filtrado y
+ * conviene poder probarla sin base de datos.
+ *
+ *     `allowed: null`  no hay restriccion de categoria, entran todas.
+ *     `allowed: []`    combinacion imposible: no entra ninguna.
+ *
+ * «Sin categoria» sobrevive solo si NADIE filtro por resumen ni por grupo: un
+ * movimiento sin categoria no pertenece a ningun resumen, asi que pedir a la vez
+ * «Sin categoria» y «Alimentacion» no podria devolverlo nunca. Se descarta esa
+ * parte de la seleccion en lugar de vaciar el resultado entero.
+ */
+export function resolveCategoryFilter(filters: TransactionFilters): {
+  allowed: Category[] | null;
+  includeUncategorized: boolean;
+} {
+  const summaries = filters.summaries ?? [];
+  const groups = filters.groups ?? [];
+  const categories = filters.categories ?? [];
+
+  let allowed: Category[] | null = null;
+
+  const narrow = (candidates: Category[]) => {
+    allowed =
+      allowed === null
+        ? [...new Set(candidates)]
+        : allowed.filter((category) => candidates.includes(category));
+  };
+
+  if (summaries.length > 0) {
+    narrow(summaries.flatMap((summary) => getCategoriesInSummary(summary)));
+  }
+
+  if (groups.length > 0) {
+    narrow(groups.flatMap((group) => getCategoriesInGroup(group)));
+  }
+
+  if (categories.length > 0) narrow(categories);
+
+  return {
+    allowed,
+    includeUncategorized:
+      Boolean(filters.uncategorized) && summaries.length === 0 && groups.length === 0,
+  };
+}
+
+/**
+ * Que estados de contabilizacion se piden, con el valor por defecto aplicado.
+ *
+ * `null` significa «no filtres»: o el usuario marco las dos casillas, o estamos
+ * en la papelera. En la papelera NO se aplica el valor por defecto a proposito:
+ * un movimiento eliminado y ademas no contabilizado desapareceria de la unica
+ * pantalla donde se puede recuperar.
+ */
+export function resolveAccountingFilter(filters: TransactionFilters): boolean | null {
+  const requested = filters.accounting ?? [];
+
+  if (requested.length === 0) {
+    return filters.status === "eliminados" ? null : true;
+  }
+
+  const wantsYes = requested.includes("contabilizados");
+  const wantsNo = requested.includes("no-contabilizados");
+
+  if (wantsYes && wantsNo) return null;
+  return wantsYes;
 }
 
 /**
@@ -283,6 +418,9 @@ function toTransaction(row: TransactionRow): Transaction {
     summary: getSummaryForCategory(category),
     group: getGroupForCategory(category),
     origin: row.origin ?? "EMAIL",
+    // `?? true` para las filas leidas antes de que existiera la columna: la
+    // migracion las deja en `true`, y esto cubre cualquier lectura parcial.
+    contabilizar: row.contabilizar ?? true,
     deletedAt: row.eliminado_at ?? null,
   };
 }
@@ -323,18 +461,28 @@ export async function getTransactions(filters: TransactionFilters = {}): Promise
     query = query.gte("transaction_at", from).lt("transaction_at", to);
   }
 
-  // Los tres niveles se traducen a un filtro sobre `category`, que es lo único
-  // que existe en la base de datos. Se aplica el MÁS específico: pedir a la vez
-  // «Alimentación» y «Delivery» tiene que devolver Delivery, no toda la familia.
-  if (filters.uncategorized) {
+  // Los tres niveles se traducen a UN SOLO filtro sobre `category`, que es lo
+  // único que existe en la base de datos. La combinación la resuelve
+  // `resolveCategoryFilter`, que es puro y está probado aparte.
+  const { allowed, includeUncategorized } = resolveCategoryFilter(filters);
+
+  if (allowed !== null && includeUncategorized) {
+    // «Sin categoría» más categorías concretas: hace falta un OR, porque
+    // `IS NULL` y `IN (...)` no caben en la misma condición de PostgREST.
+    query = query.or(`category.is.null,category.in.(${quoteList(allowed)})`);
+  } else if (allowed !== null) {
+    // Una lista vacía es una combinación imposible —«Alimentación» + «Luz»—
+    // y devuelve cero filas, que es la respuesta correcta.
+    query = query.in("category", allowed);
+  } else if (includeUncategorized) {
     query = query.is("category", null);
-  } else if (filters.category) {
-    query = query.eq("category", filters.category);
-  } else if (filters.summary) {
-    query = query.in("category", getCategoriesInSummary(filters.summary));
-  } else if (filters.group) {
-    query = query.in("category", getCategoriesInGroup(filters.group));
   }
+
+  // Contabilización. Va en la CONSULTA y no al pintar, igual que la baja
+  // lógica: así ningún total ni ningún indicador puede olvidarse de excluir
+  // lo que el usuario marcó como no contabilizable.
+  const accounting = resolveAccountingFilter(filters);
+  if (accounting !== null) query = query.eq("contabilizar", accounting);
 
   if (filters.merchant) query = query.eq("merchant", filters.merchant);
 
@@ -348,26 +496,37 @@ export async function getTransactions(filters: TransactionFilters = {}): Promise
   const { data, error } = await query.returns<TransactionRow[]>();
   if (error) throw new Error(`No se pudieron leer los movimientos: ${error.message}`);
 
-  let rows = (data ?? []).map(toTransaction);
+  // Sin post-filtrado en memoria: `resolveCategoryFilter` ya intersectó los tres
+  // niveles antes de consultar, así que lo que vuelve de PostgreSQL es
+  // exactamente lo pedido.
+  return (data ?? []).map(toTransaction);
+}
 
-  // Al combinar niveles, la consulta filtró por el más específico; aquí se
-  // comprueba que además cumpla los otros. Sin esto, pedir «Alimentación» +
-  // GASTOS FIJOS devolvería los de Alimentación, que son variables.
-  if (filters.category || filters.summary) {
-    if (filters.summary) {
-      rows = rows.filter((transaction) => transaction.summary === filters.summary);
-    }
-    if (filters.group) {
-      rows = rows.filter((transaction) => transaction.group === filters.group);
-    }
-  }
-
-  return rows;
+/**
+ * Lista de valores para un `in.(...)` de PostgREST, entrecomillada.
+ *
+ * Las comillas no son opcionales: los nombres de categoría llevan espacios y
+ * tildes («Cáfe y snacks», «Impuestos y tributos»), y sin comillas PostgREST
+ * partiría mal la lista.
+ */
+function quoteList(values: string[]): string {
+  return values.map((value) => `"${value.replace(/"/g, '\\"')}"`).join(",");
 }
 
 /* -------------------------------------------------------------------------- */
 /* Agregados                                                                   */
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Los movimientos que participan en los cálculos.
+ *
+ * Un movimiento con `contabilizar: false` existe, se lista y se edita, pero no
+ * suma en ningún sitio. No confundir con estar eliminado: eso lo decide
+ * `activo` y se filtra en la consulta.
+ */
+export function onlyCounted(transactions: Transaction[]): Transaction[] {
+  return transactions.filter((transaction) => transaction.contabilizar);
+}
 
 /** Suma de importes de una lista. */
 function sum(transactions: Transaction[]): number {
@@ -386,7 +545,14 @@ function round2(value: number): number {
  * se cuentan aparte en «Pendiente de categorizar». Repartirlos daría totales que
  * parecen correctos y no lo son.
  */
-export function buildSummary(transactions: Transaction[]): Summary {
+export function buildSummary(all: Transaction[]): Summary {
+  // Lo no contabilizado NO suma, y se descarta AQUÍ además de en la consulta.
+  // Es a propósito: la consulta puede pedir los dos estados a la vez —el filtro
+  // lo permite— y entonces los indicadores seguirían teniendo que contar solo
+  // los que cuentan. Con la comprobación en los dos sitios, ninguna pantalla
+  // puede inflar un total por olvidarse de filtrar.
+  const transactions = onlyCounted(all);
+
   const ingresos = sum(transactions.filter((t) => t.group === "INGRESOS"));
   const gastosFijos = sum(transactions.filter((t) => t.group === "GASTOS FIJOS"));
   const gastosVariables = sum(transactions.filter((t) => t.group === "GASTOS VARIABLES"));

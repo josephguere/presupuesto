@@ -37,6 +37,7 @@ function movement(category: Category | null, amount: number, extra: Partial<Tran
     summary: getSummaryForCategory(category),
     group: getGroupForCategory(category),
     origin: "EMAIL",
+    contabilizar: true,
     deletedAt: null,
     ...extra,
   } satisfies Transaction;
@@ -280,8 +281,15 @@ describe("parseFilters", () => {
 
   it("lee categoría y grupo", () => {
     const { filters } = parseFilters({ categoria: "Restaurantes", grupo: "GASTOS VARIABLES" });
-    expect(filters.category).toBe("Restaurantes");
-    expect(filters.group).toBe("GASTOS VARIABLES");
+    expect(filters.categories).toEqual(["Restaurantes"]);
+    expect(filters.groups).toEqual(["GASTOS VARIABLES"]);
+  });
+
+  it("lee VARIAS categorías del mismo parámetro repetido", () => {
+    // Es lo que envía un grupo de casillas con el mismo `name`.
+    const { filters } = parseFilters({ categoria: ["Restaurantes", "Delivery"] });
+
+    expect(filters.categories).toEqual(["Restaurantes", "Delivery"]);
   });
 
   it("combina período, grupo y categoría", () => {
@@ -294,21 +302,27 @@ describe("parseFilters", () => {
 
     expect(filters).toEqual({
       month: "2026-08",
-      group: "GASTOS VARIABLES",
-      category: "Restaurantes",
+      groups: ["GASTOS VARIABLES"],
+      categories: ["Restaurantes"],
     });
   });
 
   it("reconoce el filtro de «sin categoría»", () => {
     const { filters } = parseFilters({ categoria: "__sin_categoria__" });
     expect(filters.uncategorized).toBe(true);
-    expect(filters.category).toBeUndefined();
+    expect(filters.categories).toBeUndefined();
   });
 
   it("ignora categorías y grupos inventados", () => {
     const { filters } = parseFilters({ categoria: "Cripto", grupo: "GASTOS SECRETOS" });
-    expect(filters.category).toBeUndefined();
-    expect(filters.group).toBeUndefined();
+    expect(filters.categories).toBeUndefined();
+    expect(filters.groups).toBeUndefined();
+  });
+
+  it("descarta solo lo inventado y conserva lo válido", () => {
+    const { filters } = parseFilters({ categoria: ["Delivery", "Cripto"] });
+
+    expect(filters.categories).toEqual(["Delivery"]);
   });
 
   it("se queda con el primer valor si el parámetro se repite", () => {
@@ -371,13 +385,28 @@ describe("mes en curso por defecto", () => {
     );
 
     expect(filters.month).toBe(getCurrentMonth());
-    expect(filters.category).toBe("Seguros");
-    expect(filters.group).toBe("GASTOS FIJOS");
+    expect(filters.categories).toEqual(["Seguros"]);
+    expect(filters.groups).toEqual(["GASTOS FIJOS"]);
   });
 
   it("las categorías nuevas se pueden filtrar", () => {
-    for (const categoria of ["Peajes y estacionamiento", "Café y snacks", "Movilidad Taxi"]) {
-      expect(parseFilters({ categoria }).filters.category).toBe(categoria);
+    const nuevas = [
+      "Peajes y estacionamiento",
+      "Café y snacks",
+      "Movilidad Taxi",
+      // Las ocho del último acuerdo.
+      "Videojuegos",
+      "Actividades infantiles",
+      "Accesorios y joyería",
+      "Internet",
+      "Cursos y capacitación",
+      "Viajes",
+      "Préstamos y deudas",
+      "Pago Lley",
+    ];
+
+    for (const categoria of nuevas) {
+      expect(parseFilters({ categoria }).filters.categories).toEqual([categoria]);
     }
   });
 });
@@ -385,12 +414,12 @@ describe("mes en curso por defecto", () => {
 describe("filtro por categoría resumen", () => {
   it("lee el parámetro de la URL", () => {
     const { filters } = parseFilters({ categoriaResumen: "Alimentación" });
-    expect(filters.summary).toBe("Alimentación");
+    expect(filters.summaries).toEqual(["Alimentación"]);
   });
 
   it("ignora resúmenes inventados", () => {
-    expect(parseFilters({ categoriaResumen: "Comida" }).filters.summary).toBeUndefined();
-    expect(parseFilters({ categoriaResumen: "" }).filters.summary).toBeUndefined();
+    expect(parseFilters({ categoriaResumen: "Comida" }).filters.summaries).toBeUndefined();
+    expect(parseFilters({ categoriaResumen: "" }).filters.summaries).toBeUndefined();
   });
 
   it("se combina con el resto sin pisarlos", () => {
@@ -402,12 +431,18 @@ describe("filtro por categoría resumen", () => {
 
     expect(filters).toEqual({
       month: "2026-08",
-      summary: "Servicios del hogar",
-      group: "GASTOS FIJOS",
+      summaries: ["Servicios del hogar"],
+      groups: ["GASTOS FIJOS"],
     });
   });
 
   it("se repinta en el formulario", () => {
-    expect(parseFilters({ categoriaResumen: "Movilidad" }).raw.summary).toBe("Movilidad");
+    expect(parseFilters({ categoriaResumen: "Movilidad" }).raw.summaries).toEqual(["Movilidad"]);
+  });
+
+  it("los resúmenes nuevos se pueden filtrar", () => {
+    for (const resumen of ["Viajes", "Finanzas personales", "Remesa"]) {
+      expect(parseFilters({ categoriaResumen: resumen }).filters.summaries).toEqual([resumen]);
+    }
   });
 });

@@ -35,6 +35,7 @@ function createQuery() {
   const ranges: Array<[string, "gte" | "lt", string]> = [];
 
   const orders: Array<[string, boolean]> = [];
+  const ors: string[] = [];
 
   const query = {
     select(columns: string) {
@@ -46,6 +47,18 @@ function createQuery() {
       return query;
     },
     limit: () => query,
+    /**
+     * `or("category.is.null,category.in.(\"A\",\"B\")")`.
+     *
+     * Solo se soporta la forma EXACTA que construye `getTransactions`. Un doble
+     * que aceptara cualquier expresion de PostgREST seria un interprete de
+     * PostgREST, y entonces la prueba dejaria de comprobar la consulta para
+     * comprobar el doble.
+     */
+    or(expression: string) {
+      ors.push(expression);
+      return query;
+    },
     eq(column: string, value: unknown) {
       equals.push([column, value]);
       return query;
@@ -73,6 +86,7 @@ function createQuery() {
     returns() {
       const data = state.rows.filter(
         (row) =>
+          ors.every((expression) => matchesOr(row, expression)) &&
           equals.every(([column, value]) => row[column] === value) &&
           nulls.every((column) => row[column] === null) &&
           notNulls.every((column) => row[column] !== null) &&
@@ -109,6 +123,30 @@ function createQuery() {
   return query;
 }
 
+/**
+ * Evalua la unica forma de `or` que produce la aplicacion.
+ *
+ * `category.is.null,category.in.("Luz","Internet")` -> la categoria es nula O
+ * esta en la lista. Se parte por el separador de PostgREST y se resuelve cada
+ * termino; cualquier otra forma hace fallar la prueba a proposito, para que
+ * nadie cambie la consulta sin actualizar tambien el doble.
+ */
+function matchesOr(row: Row, expression: string): boolean {
+  const isNull = expression.includes("category.is.null");
+
+  const inList = expression.match(/category\.in\.\(([^)]*)\)/)?.[1];
+  const values = inList
+    ? inList.split(",").map((value) => value.trim().replace(/^"|"$/g, ""))
+    : [];
+
+  if (!isNull && values.length === 0) {
+    throw new Error(`El doble no entiende este or(): ${expression}`);
+  }
+
+  if (isNull && row.category === null) return true;
+  return values.includes(String(row.category));
+}
+
 const { getTransactions, getAvailableMonths, buildSummary, buildGroupedTotals } = await import(
   "./transactions"
 );
@@ -129,6 +167,7 @@ function row(overrides: Row = {}): Row {
     comment: null,
     origin: "EMAIL",
     activo: true,
+    contabilizar: true,
     eliminado_at: null,
     is_test: false,
     ...overrides,
@@ -161,7 +200,7 @@ describe("getTransactions — eliminación lógica", () => {
     // exactamente su mes y su categoría, no debe reaparecer.
     const transactions = await getTransactions({
       month: "2026-08",
-      category: "Supermercado",
+      categories: ["Supermercado"],
     });
 
     expect(transactions.map((t) => t.merchant)).toEqual(["ACTIVO"]);
@@ -307,7 +346,7 @@ describe("orden por monto", () => {
   });
 
   it("primero se filtra y después se ordena", async () => {
-    const orden = await getTransactions({ sort: "monto-desc", category: "Supermercado" });
+    const orden = await getTransactions({ sort: "monto-desc", categories: ["Supermercado"] });
 
     // Todas las filas de prueba son Supermercado, así que el filtro no quita
     // ninguna; lo que se comprueba es que el orden sobrevive al filtrado.

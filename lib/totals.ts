@@ -36,9 +36,14 @@ const UNCATEGORIZED_LABEL = "Sin categoría";
  * repartirlo daría totales que parecen correctos sin serlo.
  */
 export function buildGroupedTotals(
-  transactions: Transaction[],
+  all: Transaction[],
   order: TotalsOrder = "mayor",
 ): TotalsNode[] {
+  // Lo no contabilizado queda fuera del árbol entero, igual que en
+  // `buildSummary`. Si entrara, la tabla dinámica y las tarjetas del resumen
+  // darían cifras distintas para el mismo mes.
+  const transactions = all.filter((transaction) => transaction.contabilizar);
+
   // grupo → resumen → categoría → acumulado
   const groups = new Map<string, Map<string, Map<string, { total: number; count: number }>>>();
 

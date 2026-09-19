@@ -9,16 +9,16 @@ BCP a Gmail, la transacción aparece sola en el dashboard.
 
 ```
 Gmail
-  │  correo de consumo del BCP
+  │  correo del BCP o de Yape
   ▼
 Google Apps Script          ← trigger temporal cada 1 minuto
   │  detecta · lee · envía   (NO interpreta nada)
   ▼
-POST /api/ingest/bcp        ← cabecera x-ingest-key
-  │  valida · parsea · deduplica
+POST /api/ingest/email      ← cabecera x-ingest-key
+  │  identifica proveedor · parsea · valida · deduplica
   ▼
 Supabase PostgreSQL
-  │  email_ingestions  +  transactions
+  │  email_ingestions  +  transactions  +  category_goals
   ▼
 Dashboard Next.js           ← Server Components
 ```
@@ -36,7 +36,7 @@ datos.
 
 | Capa | Mecanismo | Qué evita |
 |---|---|---|
-| Gmail | etiqueta `BCP-Ingestado` | reenviar el mismo correo cada minuto |
+| Apps Script | caché `SENT_MESSAGE_IDS` | reenviar el mismo correo cada minuto |
 | API | `upsert` sobre `gmail_message_id` | crear dos filas para un correo |
 | PostgreSQL | `UNIQUE` en `gmail_message_id` y en `email_ingestion_id` | duplicados aunque falle todo lo demás |
 
@@ -50,19 +50,27 @@ presupuesto/
 │   ├── layout.tsx                     Layout, navegación, tema
 │   ├── page.tsx                       Dashboard: resumen del mes
 │   ├── movimientos/page.tsx           Listado completo con filtros
+│   ├── metas/page.tsx                 Metas de gasto por categoría y mes
 │   ├── eliminados/page.tsx            Papelera: bajas lógicas y restaurar
 │   ├── login/page.tsx                 Pantalla de acceso por PIN
 │   ├── actions.ts                     Crear, editar, eliminar, restaurar
+│   ├── goalActions.ts                 Guardar y eliminar metas
 │   ├── api/auth/login/route.ts        Canjea el PIN por una sesión
 │   └── api/auth/logout/route.ts       Borra la cookie
+│   ├── api/ingest/email/route.ts      Ingesta (ruta canónica)
 │   └── api/ingest/bcp/
-│       ├── route.ts                   POST de ingesta + GET de salud
+│       ├── route.ts                   La misma, con el nombre antiguo
 │       └── route.test.ts              Tests de idempotencia y seguridad
 ├── components/
 │   ├── SummaryCards.tsx               Indicadores del período
 │   ├── TotalsPivot.tsx                Totales en 3 niveles, plegables
 │   ├── MovementSortControl.tsx        Selector de orden, solo móvil
-│   ├── FiltersBar.tsx                 Mes, rango, categoría y grupo
+│   ├── FiltersBar.tsx                 Mes, rango, clasificación, contabilización
+│   ├── MultiSelectFilter.tsx          Desplegable con casillas, reutilizable
+│   ├── GoalsFilterBar.tsx             Los mismos filtros, para Metas
+│   ├── GoalDialog.tsx                 Crear y editar una meta
+│   ├── GoalProgressBar.tsx            Barra de avance de una meta
+│   ├── DeleteGoalButton.tsx           Eliminar meta, con confirmación
 │   ├── MovementForm.tsx               Formulario de crear y editar
 │   ├── MovementDialog.tsx             Modal que envuelve al formulario
 │   ├── DeleteMovementButton.tsx       Baja lógica, con confirmación
@@ -79,27 +87,32 @@ presupuesto/
 │   ├── environment.ts                 Corte entre datos de prueba y reales
 │   ├── logger.ts                      Logs estructurados, sin secretos
 │   ├── transactions.ts                Lectura de movimientos y resumen
+│   ├── goals.ts                       Metas y cálculo de su avance
 │   ├── movementSchema.ts              Validación compartida del formulario
+│   ├── goalSchema.ts                  Validación de una meta
 │   ├── exchangeRate.ts                Tipo de cambio USD→PEN con caché
 │   ├── auth/pin.ts                    Hash y verificación del PIN (scrypt)
 │   ├── auth/session.ts                Cookie firmada (HMAC, Web Crypto)
 │   ├── auth/lockout.ts                Freno de fuerza bruta
 │   └── auth/guard.ts                  Sesión en páginas y Server Actions
 │   ├── ingest/security.ts             Clave, remitente, filtro de asunto
+│   ├── ingest/pipeline.ts             La ingesta entera, compartida
 │   ├── parsers/
 │   │   ├── types.ts                   Contrato común de los parsers
 │   │   ├── normalize.ts               Texto, montos y fechas en español
+│   │   ├── providers.ts               Identifica el origen y despacha
 │   │   ├── bcpConsumo.ts              Consumos con tarjeta (débito y crédito)
 │   │   ├── bcpPagoServicio.ts         Pagos de servicios (luz, telefonía...)
 │   │   ├── bcpTransferencia.ts        Transferencias a otros bancos
-│   │   └── bcp.ts                     Punto de entrada: despacha al parser
+│   │   ├── bcp.ts                     Los tres del BCP
+│   │   └── yape.ts                    Notificaciones de yapeo
 │   └── supabase/
 │       ├── client.ts                  Fábrica compartida (sin secretos)
 │       └── server.ts                  Cliente service-role, solo servidor
 ├── types/transaction.ts               Tipos de dominio y filas de BD
 ├── proxy.ts                           Puerta de entrada: exige sesión
 ├── sql/init.sql                       Esquema completo
-├── google-apps-script/gmail-bcp.gs    Script de Gmail
+├── google-apps-script/gmail-bcp.gs    Script de Gmail (BCP y Yape)
 ├── scripts/
 │   ├── db-init.ts                     Aplicar y verificar el esquema
 │   ├── db-clear.ts                    Vaciar datos de prueba o reales
@@ -307,15 +320,19 @@ En el editor de Apps Script: **⚙ Configuración del proyecto** →
 
 | Propiedad | Valor |
 |---|---|
-| `API_URL` | `https://tu-app.vercel.app/api/ingest/bcp` |
+| `API_URL` | `https://tu-app.vercel.app/api/ingest/email` |
 | `INGEST_KEY` | El mismo valor que `GMAIL_INGEST_KEY` en Vercel |
+
+> Si ya tenías `API_URL` apuntando a `/api/ingest/bcp`, **no hace falta
+> cambiarla**: esa ruta sigue viva y acepta los correos de Yape igual. Las dos
+> llaman al mismo `lib/ingest/pipeline.ts`.
 
 Opcionales:
 
 | Propiedad | Por defecto | Para qué |
 |---|---|---|
-| `GMAIL_QUERY` | `from:notificaciones@notificacionesbcp.com.pe "Realizaste un consumo" newer_than:2d` | Ajustar la búsqueda |
-| `PROCESSED_LABEL` | `BCP-Ingestado` | Nombre de la etiqueta |
+| `GMAIL_QUERY` | Se construye sola desde `PROVIDERS` | Ajustar la búsqueda |
+| `PROCESSED_LABEL` | *(vacío)* | Una etiqueta para todos en vez de una por proveedor |
 | `VERCEL_BYPASS` | *(vacío)* | Saltarse la Deployment Protection de Vercel |
 
 **Sobre `VERCEL_BYPASS`.** Vercel protege los despliegues con un login propio. Si
@@ -617,7 +634,8 @@ duplicar. La etiqueta `BCP-Ingestado` es solo una marca visual: quitarla no
 cambia nada.
 
 **Apps Script no encuentra nada.**
-Ejecuta `previewSearch`. Si sale 0, relaja `GMAIL_QUERY`: `newer_than:2d` deja
+Ejecuta `previewSearch`. Dice qué proveedor reconoce cada correo. Si sale 0,
+relaja `GMAIL_QUERY`: `newer_than:2d` deja
 fuera los correos más antiguos.
 
 **No es tiempo real.** El trigger sondea cada minuto, así que un consumo tarda
@@ -789,11 +807,23 @@ cambiarlo: en una tabla de veinte filas, un botón «Guardar» por fila sería
 insoportable. El valor se pinta de forma optimista y se revierte si el servidor
 falla.
 
-Las categorías son una **lista fija en TypeScript** (`lib/categories.ts`), no una
-tabla. Con una docena de valores que casi nunca cambian, una tabla solo añadiría
-un JOIN a cada consulta y una pantalla de mantenimiento que nadie usaría. En la
-base de datos se guarda el texto en `transactions.category`; `NULL` es «sin
-categoría».
+Las categorías son una **lista en TypeScript** (`lib/categories.ts`), no una
+tabla. Una tabla solo añadiría un JOIN a cada consulta y una pantalla de
+mantenimiento que nadie usaría. En la base de datos se guarda el texto en
+`transactions.category`; `NULL` es «sin categoría».
+
+Son **37 categorías en 19 categorías resumen**, repartidas en tres grupos. La
+jerarquía se declara ENCADENADA —cada categoría dice su resumen, cada resumen su
+grupo— así que no hay dónde escribir una incoherencia.
+
+**Añadir una categoría es añadir una línea** a `lib/categories.ts`. No hay
+migración, ni `seed`, ni riesgo de duplicados. Y aparece sola en todas partes: el
+formulario, los cuatro filtros, el desglose del resumen, las metas y el `enum`
+que restringe a la IA de sugerencia. Nada de eso mantiene una copia de la lista.
+
+Los tres niveles —grupo y categoría resumen— **no se guardan**: se derivan de la
+categoría al leer. Por eso reagrupar categorías mañana no exige migración ni
+puede dejar un movimiento con un resumen que ya no le corresponde.
 
 ### Seguridad de la Server Action
 
@@ -807,12 +837,150 @@ contra un esquema cerrado antes de tocar nada:
 Lo peor que puede conseguir alguien es cambiar una categoría por otra válida.
 Hay tests que lo comprueban con intentos de inyección y con ids inventados.
 
-### Lo que viene después
+---
 
-Sugerir la categoría automáticamente a partir del comercio, con una tabla
-`merchant_categories` que aprenda de tus correcciones. Ver la conversación de
-diseño: reglas antes que IA, porque el gasto personal es muy repetitivo y una
-sugerencia determinista da totales en los que se puede confiar.
+## Contabilizar: lo que existe pero no suma
+
+Cada movimiento tiene una casilla **Contabilizar movimiento**, marcada por
+defecto. Al desmarcarla, el movimiento sigue ahí —se lista, se edita, se puede
+eliminar— pero **no suma** en el resumen, en los totales por categoría ni en las
+metas.
+
+Sirve para lo que no es gasto de verdad: un traspaso entre cuentas propias, un
+reembolso, una compra que otro te devuelve.
+
+### No es lo mismo que eliminar
+
+Es la distinción que sostiene toda la pantalla, y son columnas distintas a
+propósito:
+
+| Estado | ¿Se lista? | ¿Se edita? | ¿Suma? | ¿Dónde? |
+|---|---|---|---|---|
+| Activo y contabilizado | Sí | Sí | Sí | Movimientos |
+| Activo, NO contabilizado | Con el filtro | Sí | **No** | Movimientos |
+| Eliminado | No | No | No | Eliminados |
+
+Reutilizar la baja lógica habría obligado a ELIMINAR un movimiento para dejar de
+contarlo, y entonces desaparecería de Movimientos —que es justo lo que no se
+quiere—. Por eso `contabilizar` es una columna nueva y no un valor de `activo`.
+
+Un movimiento no contabilizado lleva una marca ámbar, **no roja**: el rojo es el
+color de lo eliminado y de los errores, y esto no es ninguna de las dos cosas.
+
+**Restaurar no lo toca.** Si estaba sin contabilizar antes de eliminarlo, vuelve
+sin contabilizar: son dos decisiones distintas y ninguna revoca a la otra.
+
+### Dónde se aplica
+
+El filtro va en la CONSULTA, no al pintar, igual que la baja lógica. Y además
+`buildSummary` y `buildGroupedTotals` vuelven a descartarlo por su cuenta: el
+filtro permite pedir los dos estados a la vez, y entonces los indicadores
+seguirían teniendo que contar solo los que cuentan. Con la comprobación en los
+dos sitios, ninguna pantalla puede inflar un total por olvidarse de filtrar.
+
+La papelera es la excepción: ahí se ven TODAS las bajas, cuenten o no. Si no, un
+movimiento eliminado y además no contabilizado desaparecería de la única
+pantalla desde la que se puede recuperar.
+
+---
+
+## Filtros de selección múltiple
+
+Grupo, categoría resumen, categoría y contabilización son desplegables con
+casillas. Un solo componente, `MultiSelectFilter`, con las opciones por props.
+
+**Siguen siendo un `<form method="get">`.** Por debajo hay un campo oculto por
+opción marcada, todos con el mismo `name`, así que el formulario envía
+parámetros repetidos:
+
+```
+/movimientos?categoria=Videojuegos&categoria=Internet&grupo=GASTOS%20FIJOS
+```
+
+El estado sigue viviendo en la URL, la vista sigue siendo enlazable y
+compartible, y el filtrado sigue ocurriendo en el servidor. Una URL antigua con
+un solo valor sigue funcionando: es una lista de uno.
+
+### Cómo se combinan
+
+**Unión dentro de cada nivel, intersección entre niveles.** Marcar
+«Alimentación» y «Entretenimiento» da las categorías de las dos; añadir un
+grupo estrecha el resultado a las que además estén en él.
+
+Una combinación imposible —«Alimentación» + GASTOS FIJOS— devuelve cero filas,
+que es la respuesta correcta. La regla vive en `resolveCategoryFilter`, que es
+pura y está probada aparte.
+
+### Filtros dependientes
+
+Cada nivel solo ofrece lo que cabe dentro de los de arriba: con
+«Entretenimiento» y «Servicios del hogar» marcados, Categoría ofrece
+Videojuegos, Actividades infantiles, Servicios, Luz, Gas Cálidda, Internet y
+Mantenimiento. Y si una categoría ya elegida deja de caber, **se limpia solo esa
+selección**, no las demás.
+
+### Contabilización
+
+Las dos casillas juntas equivalen a «Todos», así que no hay una tercera opción
+que diría lo mismo de otra forma. **No se puede dejar ninguna marcada**: la
+última queda bloqueada, porque sin ninguna el filtro no significa nada y el
+servidor tendría que adivinar. Así el estado ambiguo no se puede ni producir.
+
+---
+
+## Metas
+
+Una pestaña para fijar cuánto quieres gastar al mes en cada categoría y ver
+cuánto llevas.
+
+```
+Supermercado
+S/ 520.00 / S/ 800.00
+█████████████░░░░░░░  65 %
+```
+
+**El gasto no se guarda, se calcula.** Sale de los mismos movimientos que
+alimentan el Resumen, leídos con los mismos filtros, así que el «gastado» de una
+meta y el total de esa categoría en el Resumen son necesariamente la misma
+cifra. Guardarlo se desincronizaría en cuanto editaras un movimiento.
+
+Solo entran movimientos **activos, contabilizados, del mes y de la categoría**.
+
+### El porcentaje puede pasar de 100
+
+```
+Meta:        S/ 800.00
+Gastado:     S/ 1,000.00
+Disponible:  −S/ 200.00
+Porcentaje:  125 %
+```
+
+No se limita a 100 a propósito: pasarse es justo lo que hay que ver. Lo que sí
+se recorta es la BARRA, que se queda al 100 % —una barra que se sale de su caja
+no dice «me pasé», dice «esto está roto»—.
+
+### Una meta por categoría y mes
+
+Septiembre y octubre son independientes: la misma categoría puede tener S/ 800
+en uno y S/ 900 en el otro, o meta en uno y ninguna en el otro.
+
+Lo garantiza un índice único sobre `(category, year, month, is_test)`, no una
+comprobación en la aplicación. Por eso guardar dos veces la misma meta
+ACTUALIZA en vez de duplicar, y no hay carrera posible entre comprobar y
+escribir.
+
+### Una meta es una entidad aparte
+
+Crear, cambiar o borrar una meta **no toca ni un solo movimiento**. Y al revés:
+editar un movimiento no toca ninguna meta, solo cambia el gasto que se calcula.
+
+Borrar una meta sí borra la fila, a diferencia de un movimiento: una meta no es
+un hecho histórico que auditar, es una intención para un mes. Una papelera de
+metas sería una pantalla que nadie visitaría.
+
+**La categoría se guarda como texto**, no como clave ajena, porque en este
+proyecto no hay tabla de categorías: `transactions.category` también es texto y
+las dos se emparejan por igualdad exacta.
 
 ---
 
@@ -842,7 +1010,42 @@ Si no, recuerda esos correos como ya enviados y no los reenviará.
 
 ---
 
-## Qué correos del BCP se leen
+## Qué correos se leen
+
+Dos proveedores: **BCP** y **Yape**.
+
+Quién lee cada correo lo decide `lib/parsers/providers.ts`, mirando DOS cosas a
+la vez: el remitente y una frase del cuerpo. Las dos hacen falta. El remitente
+solo no basta porque el mismo buzón manda publicidad y extractos; la frase sola
+tampoco, porque cualquiera puede escribir «realizaste un consumo» en un correo.
+Exigir ambas es lo que impide que ampliar la búsqueda a Yape acabe registrando
+correos que no son operaciones.
+
+```
+Correo de Gmail
+     |
+     v
+Identificar proveedor      (remitente + frase del cuerpo)
+     |
+     +--- BCP  ---> parser de consumo / servicio / transferencia
+     |
+     +--- Yape ---> parser de yapeo
+     |
+     v
+Normalización comun        (soles, fecha de Lima, comentario)
+     |
+     v
+Validación
+     |
+     v
+Supabase
+```
+
+Lo único que cambia por proveedor es el PARSER. Guardar el correo crudo,
+deduplicar, convertir divisa, insertar y registrar es común y vive en
+`lib/ingest/pipeline.ts`, sin una sola rama por entidad.
+
+### BCP
 
 Tres tipos, cada uno con su parser. `lib/parsers/bcp.ts` decide cuál usar según
 la frase que aparece en el cuerpo; ninguna se solapa con otra.
@@ -887,13 +1090,107 @@ El BCP no notifica el dinero que entra, así que **todo correo ingerido es diner
 que sale**. No hay que deducir ningún signo, y un movimiento de origen `EMAIL`
 en el grupo INGRESOS es siempre un error de clasificación.
 
-### Añadir un tipo nuevo
+### Yape
+
+Un solo tipo: la notificación de yapeo saliente.
+
+```
+¡Acabas de yapear exitosamente!
+
+Monto de yapeo
+S/ 55.00
+
+Fecha y Hora de la operación
+14 septiembre 2026 - 07:38 a. m.
+
+Celular del Beneficiario
+XXXXXXXXX631
+
+Nombre del Beneficiario
+Jafeth Ore*
+
+N° de operación
+3229173
+```
+
+Dónde va cada dato. **No hay columnas nuevas**: todo cabe en el modelo que ya
+existía.
+
+| Del correo | Columna | Por qué |
+|---|---|---|
+| Monto | `amount` | Siempre en soles: Yape no opera en dólares |
+| Fecha y hora | `transaction_at` | Un instante, con el offset de Lima |
+| Nombre del beneficiario | `merchant` | Es el «Movimiento» de la interfaz |
+| Celular del beneficiario | `comment` | Junto al beneficiario, ver abajo |
+| Nº de operación | `operation_number` | |
+| — | `bank` = `YAPE` | Quién notificó la operación |
+| — | `operation_type` = `Yape enviado` | Yape no manda un tipo |
+
+El comentario queda así:
+
+```
+Yape a Jafeth Ore* · XXXXXXXXX631
+```
+
+**El celular va en el comentario** y no en una columna propia porque es el único
+dato que distingue a dos beneficiarios con el mismo nombre visible, y Yape ya lo
+entrega enmascarado. Si algún día dejara de enmascararlo, el parser NO lo copia:
+solo acepta la forma con equis.
+
+**El yapero —quien envía— no se guarda**: es siempre el dueño de la cuenta, así
+que sería la misma cadena en todas las filas.
+
+### Origen: `bank` frente a `origin`
+
+Son dos preguntas distintas y conviene no confundirlas:
+
+| Columna | Responde | Valores |
+|---|---|---|
+| `bank` | ¿Qué entidad lo notificó? | `BCP`, `YAPE`, `null` si es manual |
+| `origin` | ¿Cómo entró al sistema? | `EMAIL`, `MANUAL` |
+
+Un yapeo es `bank = YAPE` y `origin = EMAIL`: llegó por correo, como los del
+banco. En la tabla, la columna «Origen» enseña la ENTIDAD cuando el movimiento
+vino de un correo —BCP o YAPE— y `MANUAL` cuando lo escribiste tú, porque al
+repasar el mes lo útil es distinguir un consumo con tarjeta de un yapeo.
+
+### Nada se duplica, y no hizo falta nada nuevo
+
+La deduplicación de Yape es EXACTAMENTE la del BCP, sin una sola línea añadida.
+Son tres capas, y el número de operación de Yape no participa en ninguna:
+
+1. El caché `SENT_MESSAGE_IDS` de Apps Script se salta lo ya enviado.
+2. La API responde `ALREADY_PROCESSED` si el correo ya estaba.
+3. `gmail_message_id UNIQUE` en PostgreSQL: la garantía final.
+
+Más `email_ingestion_id UNIQUE` en `transactions`, que asegura «un correo, un
+movimiento» aunque el endpoint se ejecute dos veces a la vez.
+
+El `Nº de operación` se guarda como dato del movimiento, no como clave. Usarlo
+para deduplicar habría sido una segunda lógica en paralelo para resolver un
+problema que ya estaba resuelto.
+
+### Un correo que no se entiende no se pierde
+
+Si el remitente es conocido pero el contenido no es una operación —publicidad,
+un aviso— o si faltan campos obligatorios, el correo **se guarda igual** en
+`email_ingestions` con estado `PARSE_ERROR` y no se crea ningún movimiento. Se
+corrige el parser y se reprocesa; no se inventa un gasto.
+
+### Añadir un proveedor nuevo
 
 1. Un parser en `lib/parsers/`, con su `is…Email()` y su `parse…Email()`.
-2. Registrarlo en el array `PARSERS` de `lib/parsers/bcp.ts`.
-3. Añadir la frase a `BCP_SEARCH_BASE` **y** a `BCP_BODY_MARKERS` en
-   `google-apps-script/gmail-bcp.gs`. Si falta, el correo nunca sale de Gmail.
-4. Una muestra en `samples/` y sus tests.
+2. Registrarlo en `PROVIDERS` de `lib/parsers/providers.ts` —con su dominio,
+   sus frases y su `source`—. Eso lo habilita solo en la lista blanca de
+   remitentes, porque `lib/ingest/security.ts` la deriva de ahí.
+3. Añadir la misma entrada a `PROVIDERS` en `google-apps-script/gmail-bcp.gs`.
+   La consulta de Gmail se construye sola a partir de esa lista. Si falta, el
+   correo nunca sale de Gmail.
+4. Una muestra y sus tests.
+
+Para un tipo nuevo DENTRO del BCP, basta con registrarlo en el array `PARSERS`
+de `lib/parsers/bcp.ts` y añadir su frase a los `markers` del proveedor BCP en
+el Apps Script.
 
 ---
 

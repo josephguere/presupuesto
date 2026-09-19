@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { deaccent } from "@/lib/parsers/normalize";
+import { allProviderDomains } from "@/lib/parsers/providers";
 
 /**
  * Reglas de admisión de la ingesta: quién puede llamar y qué correos aceptamos.
@@ -11,8 +12,17 @@ import { deaccent } from "@/lib/parsers/normalize";
 /** Cabecera con la clave compartida que envía Google Apps Script. */
 export const INGEST_KEY_HEADER = "x-ingest-key";
 
-/** Remitente del BCP por defecto, si no se configura `BCP_ALLOWED_SENDERS`. */
-const DEFAULT_ALLOWED_SENDERS = ["notificaciones@notificacionesbcp.com.pe"];
+/**
+ * Remitentes admitidos por defecto.
+ *
+ * Salen del catálogo de proveedores, no de una lista escrita a mano: añadir un
+ * proveedor en `lib/parsers/providers.ts` lo habilita aquí solo. Duplicar los
+ * dominios permitiría que un proveedor tuviera parser pero no permiso de
+ * entrada, y el síntoma sería un 403 desconcertante.
+ */
+function defaultAllowedSenders(): string[] {
+  return allProviderDomains();
+}
 
 /**
  * Compara dos secretos en tiempo constante.
@@ -58,17 +68,24 @@ export function extractEmailAddress(from: string): string {
   return (angled?.[1] ?? from).trim().toLowerCase();
 }
 
-/** Remitentes aceptados, configurables por entorno. */
+/**
+ * Remitentes aceptados, configurables por entorno.
+ *
+ * OJO CON `BCP_ALLOWED_SENDERS`: si está configurada, SUSTITUYE por completo a
+ * la lista por defecto. Una instalación que la tuviera puesta con solo el
+ * dominio del BCP rechazaría los correos de Yape con un 403. El nombre de la
+ * variable se conserva por compatibilidad con los despliegues ya existentes.
+ */
 export function getAllowedSenders(): string[] {
   const configured = process.env.BCP_ALLOWED_SENDERS;
-  if (!configured) return DEFAULT_ALLOWED_SENDERS;
+  if (!configured) return defaultAllowedSenders();
 
   const parsed = configured
     .split(",")
     .map((value) => value.trim().toLowerCase())
     .filter((value) => value.length > 0);
 
-  return parsed.length > 0 ? parsed : DEFAULT_ALLOWED_SENDERS;
+  return parsed.length > 0 ? parsed : defaultAllowedSenders();
 }
 
 /**
@@ -88,11 +105,15 @@ export function isAllowedSender(from: string): boolean {
 }
 
 /**
- * Filtro opcional por asunto.
+ * Filtro opcional por asunto. **Solo se aplica a los correos del BCP.**
  *
- * Vacío por defecto: todavía no conocemos el asunto exacto de todos los correos
- * del BCP, así que el MVP valida por remitente + contenido. Cuando confirmes el
- * asunto real, basta con rellenar `BCP_SUBJECT_FILTER` — sin desplegar código.
+ * Vacío por defecto: el MVP valida por remitente + contenido. Cuando confirmes
+ * el asunto real, basta con rellenar `BCP_SUBJECT_FILTER` — sin desplegar
+ * código.
+ *
+ * Quien decide a qué proveedor se le aplica es `lib/ingest/pipeline.ts`. La
+ * variable lleva el nombre del banco y contiene una frase suya, así que
+ * aplicarla a Yape dejaría fuera todos sus correos sin ningún aviso.
  */
 export function matchesSubjectFilter(subject: string | null | undefined): boolean {
   const filter = process.env.BCP_SUBJECT_FILTER?.trim();
