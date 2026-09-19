@@ -715,3 +715,74 @@ describe("graficos", () => {
     expect(chart?.points.some((point) => point.label.startsWith("Otras"))).toBe(false);
   });
 });
+
+describe("evolucion mensual", () => {
+  it("reparte el gasto por mes y NO lo ordena por importe", async () => {
+    // Es una serie temporal: ordenarla por monto destruiria lo que se ve.
+    const hoy = new Date();
+    const mes = (atras: number) => {
+      const d = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth() - atras, 15, 12));
+      return d.toISOString();
+    };
+
+    state.rows = [
+      row({ id: "a", amount: "100.00", transaction_at: mes(2) }),
+      row({ id: "b", amount: "500.00", transaction_at: mes(1) }),
+      row({ id: "c", amount: "200.00", transaction_at: mes(0) }),
+    ];
+
+    const result = await ejecutar({ intencion: "monthly_evolution", meses: 3 });
+
+    expect(result.filas).toHaveLength(3);
+    // Del mas antiguo al mas reciente, con los importes SIN reordenar.
+    expect(result.filas.map((fila) => fila.total)).toEqual([100, 500, 200]);
+  });
+
+  it("lee TODOS los meses pedidos, no solo el actual", async () => {
+    // El periodo por defecto es «este mes»: sin la correccion, los meses
+    // anteriores saldrian en cero y la linea seria plana.
+    const hoy = new Date();
+    const haceDos = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth() - 2, 15, 12));
+
+    state.rows = [row({ id: "viejo", amount: "777.00", transaction_at: haceDos.toISOString() })];
+
+    const result = await ejecutar({ intencion: "monthly_evolution", meses: 3 });
+
+    expect(result.filas.some((fila) => fila.total === 777)).toBe(true);
+  });
+
+  it("los meses sin movimientos salen con cero, no desaparecen", async () => {
+    state.rows = [];
+
+    const result = await ejecutar({ intencion: "monthly_evolution", meses: 4 });
+
+    expect(result.filas).toHaveLength(4);
+    expect(result.filas.every((fila) => fila.total === 0)).toBe(true);
+    expect(result.vacio).toBe(true);
+  });
+
+  it("los ingresos no entran: aplastarian la linea", async () => {
+    const ahora = new Date().toISOString();
+
+    state.rows = [
+      row({ id: "g", amount: "100.00", category: "Supermercado", transaction_at: ahora }),
+      row({ id: "i", amount: "5000.00", category: "Ingresos", transaction_at: ahora }),
+    ];
+
+    const result = await ejecutar({ intencion: "monthly_evolution", meses: 2 });
+    const ultimo = result.filas.at(-1)!;
+
+    expect(ultimo.total).toBe(100);
+  });
+
+  it("lleva grafico de LINEA, no de barras", async () => {
+    const ahora = new Date().toISOString();
+    state.rows = [row({ amount: "100.00", transaction_at: ahora })];
+
+    const result = await ejecutar({ intencion: "monthly_evolution", meses: 3 });
+    const chart = toChatResult(result)?.chart;
+
+    expect(chart?.type).toBe("line");
+    expect(chart?.points).toHaveLength(3);
+  });
+});

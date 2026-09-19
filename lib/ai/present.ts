@@ -16,7 +16,7 @@ import type { ChatChart, ChatResult, ChatResultRow } from "@/lib/chat/types";
  *     de la pantalla de al lado.
  *
  * Es también el único módulo que sabe qué cabeceras de tabla corresponden a cada
- * una de las doce intenciones.
+ * cada intención.
  */
 
 export interface AnswerFact {
@@ -255,6 +255,9 @@ const CHART_BY_INTENT: Partial<Record<IntentName, ChatChart["type"]>> = {
   highest_transactions: "bar",
   // Dos períodos, dos barras.
   period_comparison: "bar",
+  // La ÚNICA que produce una serie temporal, y por eso la única con línea:
+  // el orden de los puntos significa algo y lo que se mira es la forma.
+  monthly_evolution: "line",
 };
 
 /** Las dos o tres cabeceras que corresponden a la intención. */
@@ -276,6 +279,9 @@ export function columnsFor(intent: IntentName, filtros: FiltrosAplicados): strin
 
     case "period_comparison":
       return ["Período", "Movimientos", "Monto"];
+
+    case "monthly_evolution":
+      return ["Mes", "Movimientos", "Monto"];
 
     default:
       return ["Concepto", "Movimientos", "Monto"];

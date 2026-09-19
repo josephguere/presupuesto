@@ -33,14 +33,14 @@ import type { Group, SummaryCategory } from "@/lib/categories";
  * encajar.
  *
  * AQUÍ SE RECHAZA TODO LO IMPOSIBLE, y se hace SIN TOCAR SUPABASE. Una intención
- * que no está entre las doce, una categoría que no existe, un `group_total` sin
+ * que no está en el catálogo, una categoría que no existe, un `group_total` sin
  * grupo: todo eso muere antes de que se abra una sola conexión.
  *
  * LA DEFENSA CONTRA LA INYECCIÓN NO ES EL PROMPT, igual que en
  * `lib/suggest/gemini.ts`. La pregunta la escribe el usuario y los nombres de
  * comercio vienen de correos del banco. Que el modelo devuelva `inScope: true`
  * después de leer «ignora tus instrucciones» no sirve de nada: lo único que puede
- * conseguir una inyección es elegir OTRA de las doce intenciones con OTRO filtro
+ * conseguir una inyección es elegir OTRA intención del catálogo con OTRO filtro
  * del catálogo, y entonces el usuario ve un total real de su propio presupuesto
  * que no era el que pidió. No hay ninguna forma de que el modelo escriba SQL,
  * nombre una tabla, lea una columna que no está en la lista o escriba nada.
@@ -59,6 +59,7 @@ export const INTENTS = [
   "group_breakdown",
   "merchant_total",
   "period_comparison",
+  "monthly_evolution",
 ] as const;
 
 export type IntentName = (typeof INTENTS)[number];
@@ -162,6 +163,12 @@ export function buildIntentResponseSchema(catalog: Catalog): Record<string, unkn
       },
       orden: { type: "string", enum: [...LIST_ORDERS] },
       limite: { type: "integer", description: "Cuántos movimientos pidió. 0 si no lo dijo." },
+      meses: {
+        type: "integer",
+        description:
+          "Solo con monthly_evolution: cuántos meses mirar hacia atrás, " +
+          "contando el actual. 0 si no lo dijo.",
+      },
     },
     // Todos obligatorios: un esquema plano y sin opcionales es el que mejor
     // cumplen los modelos. Los campos que no aplican llevan el centinela.
@@ -184,6 +191,7 @@ export function buildIntentResponseSchema(catalog: Catalog): Record<string, unkn
       "comentario",
       "orden",
       "limite",
+      "meses",
     ],
   };
 }
@@ -205,7 +213,7 @@ export interface IntentFilters {
    * Es un FILTRO más, no una intención nueva: «¿cuánto gasté en movimientos con
    * Lley en el comentario?» es un `total_expenses` con este campo puesto, y
    * «muéstrame los que dicen Hanna» es un `transaction_list`. Así funciona con
-   * las doce intenciones sin añadir ninguna.
+   * todas las intenciones sin añadir ninguna.
    */
   comentario?: string;
 }
@@ -239,6 +247,13 @@ export type Intent =
     }
   | { intencion: "group_total"; periodo: PeriodSpec; filtros: IntentFilters }
   | { intencion: "group_breakdown"; periodo: PeriodSpec; filtros: IntentFilters }
+  | {
+      intencion: "monthly_evolution";
+      periodo: PeriodSpec;
+      filtros: IntentFilters;
+      /** Cuántos meses atrás, contando el actual. */
+      meses: number;
+    }
   | { intencion: "merchant_total"; periodo: PeriodSpec; filtros: IntentFilters }
   | {
       intencion: "period_comparison";
@@ -287,7 +302,7 @@ export function parseIntent(raw: unknown, catalog: Catalog, now: Date = new Date
 
   // Fuera de alcance: lo dice el modelo, y el servidor lo respeta sin más
   // preguntas. La comprobación que de verdad contiene es la del enum de
-  // `intencion`: sin una de las doce no hay nada que ejecutar.
+  // `intencion`: sin una del catálogo no hay nada que ejecutar.
   if (campos.enAlcance === false) {
     return rechazo("fuera_de_alcance", "el modelo marcó la pregunta fuera de alcance");
   }
@@ -386,6 +401,17 @@ export function parseIntent(raw: unknown, catalog: Catalog, now: Date = new Date
 
     case "group_breakdown":
       return { ok: true, intent: { intencion, periodo, filtros: filtros.value } };
+
+    case "monthly_evolution":
+      return {
+        ok: true,
+        intent: {
+          intencion,
+          periodo,
+          filtros: filtros.value,
+          meses: readMonths(campos.meses),
+        },
+      };
 
     case "merchant_total": {
       if (!filtros.value.comercio) {
@@ -604,6 +630,22 @@ function readLimit(value: unknown, rango: { defecto: number; maximo: number }): 
   const pedido = readInteger(value);
   if (pedido <= 0) return rango.defecto;
   return Math.min(pedido, rango.maximo);
+}
+
+/**
+ * Cuántos meses mira la evolución.
+ *
+ * Seis por defecto: medio año entra de un vistazo en la pantalla de un móvil y
+ * es bastante para ver una tendencia. Menos de dos no es una evolución —sería
+ * un punto suelto— y más de veinticuatro convierte la línea en un garabato.
+ */
+export const EVOLUTION_MONTHS = { defecto: 6, minimo: 2, maximo: 24 } as const;
+
+function readMonths(value: unknown): number {
+  const pedido = readInteger(value);
+  if (pedido <= 0) return EVOLUTION_MONTHS.defecto;
+
+  return Math.min(Math.max(pedido, EVOLUTION_MONTHS.minimo), EVOLUTION_MONTHS.maximo);
 }
 
 function readOrder(value: unknown): ListOrder {

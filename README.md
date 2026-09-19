@@ -1413,9 +1413,24 @@ un token más y hace imposible que pida la línea temporal de un único dato.
 
 | Lleva gráfico | No lleva |
 |---|---|
-| Reparto por categoría o grupo | Una cifra suelta |
-| Los movimientos más altos | Una lista de movimientos individuales |
-| Comparación de dos períodos | Una serie de un solo punto |
+| Reparto por categoría o grupo (barras) | Una cifra suelta |
+| Los movimientos más altos (barras) | Una lista de movimientos individuales |
+| Comparación de dos períodos (barras) | Una serie de un solo punto |
+| Evolución mes a mes (línea) | |
+
+La **evolución mensual** es la única intención que produce una serie temporal, y
+por eso la única con línea:
+
+```
+¿Cómo ha evolucionado mi gasto?
+Muéstrame la tendencia de los últimos 4 meses
+```
+
+Seis meses por defecto, entre 2 y 24. Ignora el período que se le pase y mira
+los N meses por su cuenta. Los meses **sin movimientos salen con cero**, no se
+saltan: comprimir el eje haría que un mes sin gastos pareciera no haber
+existido, cuando es justo un dato. Los ingresos quedan fuera, como en los
+desgloses: el sueldo aplastaría la línea.
 
 La fila de resto —«Otras 7»— se queda fuera: es un agregado sintético y pintarlo
 junto a categorías reales invitaría a compararlo con ellas.
