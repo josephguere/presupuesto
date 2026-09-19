@@ -42,6 +42,8 @@ function respuesta(overrides: Record<string, unknown> = {}) {
     comentario: "",
     orden: "recientes",
     limite: 0,
+    unidadEvolucion: "mes",
+    cantidadEvolucion: 0,
     ...overrides,
   };
 }

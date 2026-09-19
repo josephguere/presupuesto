@@ -8,6 +8,8 @@ import {
 import { merchantFamilyKey, normalizeMerchant } from "@/lib/suggest/merchant";
 import { LIMA_TIME_ZONE, formatMonthLabel } from "@/lib/format";
 import {
+  addDays,
+  formatDay,
   getLimaToday,
   resolvePeriod,
   toTransactionFilters,
@@ -67,7 +69,9 @@ export async function executeIntent(
   // defecto— y los demás meses saldrían en cero: una línea plana que parece
   // un dato y no lo es.
   const efectivo =
-    intent.intencion === "monthly_evolution" ? evolutionPeriod(intent.meses) : period;
+    intent.intencion === "monthly_evolution"
+      ? evolutionPeriod(intent.unidad, intent.cantidad)
+      : period;
 
   const rows = await readPeriod(efectivo, intent.filtros, options.signal);
   const merchant = matchMerchant(rows, intent.filtros.comercio);
@@ -139,9 +143,9 @@ export async function executeIntent(
       return { ...base, ...breakdown(filtradas, "grupo", intent.filtros) };
 
     case "monthly_evolution":
-      // Las filas ya vienen leídas: el período de esta intención abarca TODOS
-      // los meses pedidos, y aquí solo se reparten por mes.
-      return { ...base, ...monthlyEvolution(filtradas, intent.meses) };
+      // Las filas ya vienen leídas: el período de esta intención abarca TODA
+      // la ventana pedida, y aquí solo se reparten por día o por mes.
+      return { ...base, ...evolution(filtradas, intent.unidad, intent.cantidad) };
 
     case "period_comparison": {
       const compare = options.comparePeriod;
@@ -551,30 +555,33 @@ function comparison(
 }
 
 /**
- * Gasto mes a mes, del más antiguo al más reciente.
+ * Gasto por día o por mes, del más antiguo al más reciente.
  *
  * EL ORDEN NO SE TOCA: es una serie temporal, así que ordenarla por importe
  * —como se hace en los desgloses— destruiría justo lo que se quiere ver.
  *
- * Los meses SIN movimientos se incluyen con cero. Saltárselos comprimiría el
- * eje y haría que un mes sin gastos pareciera no haber existido, cuando es
- * precisamente un dato.
+ * Los puntos SIN movimientos se incluyen con cero. Saltárselos comprimiría el
+ * eje y haría que un día o un mes sin gastos pareciera no haber existido,
+ * cuando es precisamente un dato.
  *
  * Los ingresos quedan fuera, igual que en los desgloses: la pregunta es cómo
  * evoluciona el GASTO, y el sueldo lo aplastaría todo.
  */
-function monthlyEvolution(rows: Transaction[], meses: number): Partes {
+function evolution(rows: Transaction[], unidad: "dia" | "mes", cantidad: number): Partes {
   const gastos = rows.filter((row) => row.group !== "INGRESOS");
 
-  // Se parte de los meses pedidos, no de los que tengan movimientos: así los
+  // Se parte de los puntos pedidos, no de los que tengan movimientos: así los
   // vacíos salen con cero en vez de desaparecer.
-  const claves = lastMonths(meses);
+  const claves = unidad === "dia" ? lastDays(cantidad) : lastMonths(cantidad);
+  const etiquetar = unidad === "dia" ? formatDay : formatMonthLabel;
+  const claveDe = unidad === "dia" ? dayKeyOf : monthKeyOf;
+
   const acumulado = new Map<string, { total: number; count: number }>(
     claves.map((clave) => [clave, { total: 0, count: 0 }]),
   );
 
   for (const row of gastos) {
-    const clave = monthKeyOf(row.transactionAt);
+    const clave = claveDe(row.transactionAt);
     const actual = clave ? acumulado.get(clave) : undefined;
     if (!actual) continue;
 
@@ -586,46 +593,54 @@ function monthlyEvolution(rows: Transaction[], meses: number): Partes {
     const { total, count } = acumulado.get(clave)!;
 
     return {
-      etiqueta: formatMonthLabel(clave),
+      etiqueta: etiquetar(clave),
       total,
-      texto: metricaMonto("mes", "", total).texto,
+      texto: metricaMonto("punto", "", total).texto,
       movimientos: count,
     };
   });
 
   const totales = filas.map((fila) => fila.total);
   const mayor = filas.reduce((a, b) => (b.total > a.total ? b : a), filas[0]);
+  const singular = unidad === "dia" ? "día" : "mes";
+  const plural = unidad === "dia" ? "días" : "meses";
 
   return {
     metricas: [
-      metricaMonto("total", `Total de los últimos ${meses} meses`, sumRounded(totales)),
-      metricaMonto("promedio", "Promedio mensual", sumRounded(totales) / meses),
-      metricaMonto("mayor", `Mes con más gasto: ${mayor.etiqueta}`, mayor.total),
+      metricaMonto("total", `Total de los últimos ${cantidad} ${plural}`, sumRounded(totales)),
+      metricaMonto(
+        "promedio",
+        `Promedio por ${singular}`,
+        sumRounded(totales) / cantidad,
+      ),
+      metricaMonto(
+        "mayor",
+        `${unidad === "dia" ? "Día" : "Mes"} con más gasto: ${mayor.etiqueta}`,
+        mayor.total,
+      ),
     ],
     filas,
     totalFilas: filas.length,
     filasOmitidas: 0,
-    // Todos los meses a cero significa que no hubo ni un gasto en el período.
+    // Todos los puntos a cero significa que no hubo ni un gasto en el período.
     vacio: totales.every((total) => total === 0),
   };
 }
 
 /**
- * El período que abarca los últimos N meses completos, hasta hoy.
+ * El período que abarca la ventana pedida, hasta hoy.
  *
  * Se construye aquí y no se le pide al modelo: `lib/period.ts` ya resuelve
  * rangos, y dejar que el modelo calcule «del 1 de abril al 19 de septiembre»
  * sería pedirle aritmética de calendario, que es donde peor se porta.
  */
-function evolutionPeriod(meses: number): ResolvedPeriod {
-  const claves = lastMonths(meses);
-  const primera = claves[0];
+function evolutionPeriod(unidad: "dia" | "mes", cantidad: number): ResolvedPeriod {
+  const hoy = getLimaToday();
 
-  return resolvePeriod({
-    kind: "rango",
-    from: `${primera}-01`,
-    to: getLimaToday(),
-  });
+  const from =
+    unidad === "dia" ? addDays(hoy, -(cantidad - 1)) : `${lastMonths(cantidad)[0]}-01`;
+
+  return resolvePeriod({ kind: "rango", from, to: hoy });
 }
 
 /** Las claves `YYYY-MM` de los últimos N meses, de la más antigua a la actual. */
@@ -644,6 +659,12 @@ function lastMonths(meses: number): string[] {
   return claves;
 }
 
+/** Las claves `YYYY-MM-DD` de los últimos N días, de la más antigua a hoy. */
+function lastDays(dias: number): string[] {
+  const hoy = getLimaToday();
+  return Array.from({ length: dias }, (_, index) => addDays(hoy, -(dias - 1 - index)));
+}
+
 /** `YYYY-MM` del movimiento, en hora de Lima. */
 function monthKeyOf(iso: string | null): string | null {
   if (!iso) return null;
@@ -654,10 +675,27 @@ function monthKeyOf(iso: string | null): string | null {
   return MONTH_KEY_FORMATTER.format(fecha);
 }
 
+/** `YYYY-MM-DD` del movimiento, en hora de Lima. */
+function dayKeyOf(iso: string | null): string | null {
+  if (!iso) return null;
+
+  const fecha = new Date(iso);
+  if (Number.isNaN(fecha.getTime())) return null;
+
+  return DAY_KEY_FORMATTER.format(fecha);
+}
+
 const MONTH_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
   timeZone: LIMA_TIME_ZONE,
   year: "numeric",
   month: "2-digit",
+});
+
+const DAY_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: LIMA_TIME_ZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
 });
 
 function sumRounded(values: number[]): number {

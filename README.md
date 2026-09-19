@@ -1424,13 +1424,20 @@ por eso la única con línea:
 ```
 ¿Cómo ha evolucionado mi gasto?
 Muéstrame la tendencia de los últimos 4 meses
+Muéstrame mi gasto día a día de los últimos 10 días
+¿Cómo ha ido mi gasto por días esta semana?
 ```
 
-Seis meses por defecto, entre 2 y 24. Ignora el período que se le pase y mira
-los N meses por su cuenta. Los meses **sin movimientos salen con cero**, no se
-saltan: comprimir el eje haría que un mes sin gastos pareciera no haber
-existido, cuando es justo un dato. Los ingresos quedan fuera, como en los
-desgloses: el sueldo aplastaría la línea.
+Por defecto es **mensual** —seis meses, entre 2 y 24—, pero cambia a **diaria**
+en cuanto pides «día a día», «diario» o «por días» —catorce días por defecto,
+entre 2 y 60—. Ignora el período que se le pase y calcula su propia ventana:
+pedir «últimos 3 meses» sin más también vale, y pedir un rango de fechas por
+otro lado no tiene efecto aquí.
+
+Los puntos **sin movimientos salen con cero**, no se saltan: comprimir el eje
+haría que un día o un mes sin gastos pareciera no haber existido, cuando es
+justo un dato. Los ingresos quedan fuera, como en los desgloses: el sueldo
+aplastaría la línea.
 
 La fila de resto —«Otras 7»— se queda fuera: es un agregado sintético y pintarlo
 junto a categorías reales invitaría a compararlo con ellas.

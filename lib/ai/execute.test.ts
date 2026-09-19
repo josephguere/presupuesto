@@ -731,7 +731,7 @@ describe("evolucion mensual", () => {
       row({ id: "c", amount: "200.00", transaction_at: mes(0) }),
     ];
 
-    const result = await ejecutar({ intencion: "monthly_evolution", meses: 3 });
+    const result = await ejecutar({ intencion: "monthly_evolution", unidadEvolucion: "mes", cantidadEvolucion: 3 });
 
     expect(result.filas).toHaveLength(3);
     // Del mas antiguo al mas reciente, con los importes SIN reordenar.
@@ -746,7 +746,7 @@ describe("evolucion mensual", () => {
 
     state.rows = [row({ id: "viejo", amount: "777.00", transaction_at: haceDos.toISOString() })];
 
-    const result = await ejecutar({ intencion: "monthly_evolution", meses: 3 });
+    const result = await ejecutar({ intencion: "monthly_evolution", unidadEvolucion: "mes", cantidadEvolucion: 3 });
 
     expect(result.filas.some((fila) => fila.total === 777)).toBe(true);
   });
@@ -754,7 +754,7 @@ describe("evolucion mensual", () => {
   it("los meses sin movimientos salen con cero, no desaparecen", async () => {
     state.rows = [];
 
-    const result = await ejecutar({ intencion: "monthly_evolution", meses: 4 });
+    const result = await ejecutar({ intencion: "monthly_evolution", unidadEvolucion: "mes", cantidadEvolucion: 4 });
 
     expect(result.filas).toHaveLength(4);
     expect(result.filas.every((fila) => fila.total === 0)).toBe(true);
@@ -769,7 +769,7 @@ describe("evolucion mensual", () => {
       row({ id: "i", amount: "5000.00", category: "Ingresos", transaction_at: ahora }),
     ];
 
-    const result = await ejecutar({ intencion: "monthly_evolution", meses: 2 });
+    const result = await ejecutar({ intencion: "monthly_evolution", unidadEvolucion: "mes", cantidadEvolucion: 2 });
     const ultimo = result.filas.at(-1)!;
 
     expect(ultimo.total).toBe(100);
@@ -779,10 +779,126 @@ describe("evolucion mensual", () => {
     const ahora = new Date().toISOString();
     state.rows = [row({ amount: "100.00", transaction_at: ahora })];
 
-    const result = await ejecutar({ intencion: "monthly_evolution", meses: 3 });
+    const result = await ejecutar({ intencion: "monthly_evolution", unidadEvolucion: "mes", cantidadEvolucion: 3 });
     const chart = toChatResult(result)?.chart;
 
     expect(chart?.type).toBe("line");
     expect(chart?.points).toHaveLength(3);
+  });
+});
+
+describe("evolucion diaria", () => {
+  it("reparte el gasto por dia y NO lo ordena por importe", async () => {
+    const hoy = new Date();
+    const dia = (atras: number) => {
+      const d = new Date(Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate() - atras, 12));
+      return d.toISOString();
+    };
+
+    state.rows = [
+      row({ id: "a", amount: "10.00", transaction_at: dia(4) }),
+      row({ id: "b", amount: "80.00", transaction_at: dia(2) }),
+      row({ id: "c", amount: "30.00", transaction_at: dia(0) }),
+    ];
+
+    const result = await ejecutar({
+      intencion: "monthly_evolution",
+      unidadEvolucion: "dia",
+      cantidadEvolucion: 5,
+    });
+
+    expect(result.filas).toHaveLength(5);
+    // Del mas antiguo al mas reciente: dia(4), dia(3)=0, dia(2), dia(1)=0, dia(0).
+    expect(result.filas.map((fila) => fila.total)).toEqual([10, 0, 80, 0, 30]);
+  });
+
+  it("lee TODOS los dias pedidos, no solo hoy", async () => {
+    const hoy = new Date();
+    const haceCuatro = new Date(
+      Date.UTC(hoy.getUTCFullYear(), hoy.getUTCMonth(), hoy.getUTCDate() - 4, 12),
+    );
+
+    state.rows = [row({ id: "viejo", amount: "55.00", transaction_at: haceCuatro.toISOString() })];
+
+    const result = await ejecutar({
+      intencion: "monthly_evolution",
+      unidadEvolucion: "dia",
+      cantidadEvolucion: 7,
+    });
+
+    expect(result.filas.some((fila) => fila.total === 55)).toBe(true);
+  });
+
+  it("los dias sin movimientos salen con cero, no desaparecen", async () => {
+    state.rows = [];
+
+    const result = await ejecutar({
+      intencion: "monthly_evolution",
+      unidadEvolucion: "dia",
+      cantidadEvolucion: 5,
+    });
+
+    expect(result.filas).toHaveLength(5);
+    expect(result.filas.every((fila) => fila.total === 0)).toBe(true);
+    expect(result.vacio).toBe(true);
+  });
+
+  it("cada punto se etiqueta como fecha, no como mes", async () => {
+    const ahora = new Date().toISOString();
+    state.rows = [row({ amount: "20.00", transaction_at: ahora })];
+
+    const result = await ejecutar({
+      intencion: "monthly_evolution",
+      unidadEvolucion: "dia",
+      cantidadEvolucion: 3,
+    });
+
+    // «formatDay» escribe «19 de septiembre de 2026»; «formatMonthLabel»
+    // escribiría «Septiembre 2026». Que aparezca «de» los distingue.
+    expect(result.filas[0].etiqueta).toContain(" de ");
+  });
+
+  it("sin unidad, la evolucion sigue siendo mensual por defecto", async () => {
+    const ahora = new Date().toISOString();
+    state.rows = [row({ amount: "20.00", transaction_at: ahora })];
+
+    const result = await ejecutar({ intencion: "monthly_evolution" });
+
+    // Seis meses por defecto, no seis dias.
+    expect(result.filas).toHaveLength(6);
+  });
+
+  it("una cantidad fuera de rango se recorta al maximo de dias", async () => {
+    const parsed = parseIntent(
+      {
+        enAlcance: true,
+        intencion: "monthly_evolution",
+        periodo: "este_mes",
+        periodoDias: 0,
+        periodoMes: 0,
+        periodoAno: 0,
+        periodoDesde: "",
+        periodoHasta: "",
+        periodoComparado: "NINGUNA",
+        metrica: "gastos",
+        categoria: "NINGUNA",
+        categoriaResumen: "NINGUNA",
+        grupo: "NINGUNA",
+        sinCategoria: false,
+        comercio: "",
+        comentario: "",
+        orden: "recientes",
+        limite: 0,
+        unidadEvolucion: "dia",
+        cantidadEvolucion: 999,
+      },
+      catalogo,
+      AHORA,
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok && parsed.intent.intencion === "monthly_evolution") {
+      expect(parsed.intent.cantidad).toBe(60);
+    }
   });
 });

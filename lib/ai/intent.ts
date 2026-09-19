@@ -163,11 +163,19 @@ export function buildIntentResponseSchema(catalog: Catalog): Record<string, unkn
       },
       orden: { type: "string", enum: [...LIST_ORDERS] },
       limite: { type: "integer", description: "Cuántos movimientos pidió. 0 si no lo dijo." },
-      meses: {
+      unidadEvolucion: {
+        type: "string",
+        enum: ["dia", "mes"],
+        description:
+          "Solo con monthly_evolution: «dia» si pidió ver por días " +
+          "(«día a día», «diario»), «mes» en cualquier otro caso, incluido " +
+          "si no lo dijo.",
+      },
+      cantidadEvolucion: {
         type: "integer",
         description:
-          "Solo con monthly_evolution: cuántos meses mirar hacia atrás, " +
-          "contando el actual. 0 si no lo dijo.",
+          "Solo con monthly_evolution: cuántas unidades mirar hacia atrás " +
+          "(meses o días, según unidadEvolucion). 0 si no lo dijo.",
       },
     },
     // Todos obligatorios: un esquema plano y sin opcionales es el que mejor
@@ -191,7 +199,8 @@ export function buildIntentResponseSchema(catalog: Catalog): Record<string, unkn
       "comentario",
       "orden",
       "limite",
-      "meses",
+      "unidadEvolucion",
+      "cantidadEvolucion",
     ],
   };
 }
@@ -251,8 +260,16 @@ export type Intent =
       intencion: "monthly_evolution";
       periodo: PeriodSpec;
       filtros: IntentFilters;
-      /** Cuántos meses atrás, contando el actual. */
-      meses: number;
+      /** «dia» o «mes». Decide cada cuánto se agrupa la serie. */
+      unidad: "dia" | "mes";
+      /**
+       * Cuántas unidades atrás, contando la actual.
+       *
+       * Son MESES si `unidad` es «mes», y DÍAS si `unidad` es «dia» — el mismo
+       * número significa cosas muy distintas según la unidad, así que no hay
+       * un tope común: se aplica el de la unidad que corresponda.
+       */
+      cantidad: number;
     }
   | { intencion: "merchant_total"; periodo: PeriodSpec; filtros: IntentFilters }
   | {
@@ -402,16 +419,20 @@ export function parseIntent(raw: unknown, catalog: Catalog, now: Date = new Date
     case "group_breakdown":
       return { ok: true, intent: { intencion, periodo, filtros: filtros.value } };
 
-    case "monthly_evolution":
+    case "monthly_evolution": {
+      const unidad = campos.unidadEvolucion === "dia" ? "dia" : "mes";
+
       return {
         ok: true,
         intent: {
           intencion,
           periodo,
           filtros: filtros.value,
-          meses: readMonths(campos.meses),
+          unidad,
+          cantidad: readEvolutionAmount(unidad, campos.cantidadEvolucion),
         },
       };
+    }
 
     case "merchant_total": {
       if (!filtros.value.comercio) {
@@ -633,19 +654,27 @@ function readLimit(value: unknown, rango: { defecto: number; maximo: number }): 
 }
 
 /**
- * Cuántos meses mira la evolución.
+ * Cuántas unidades mira la evolución, según sea diaria o mensual.
  *
- * Seis por defecto: medio año entra de un vistazo en la pantalla de un móvil y
- * es bastante para ver una tendencia. Menos de dos no es una evolución —sería
- * un punto suelto— y más de veinticuatro convierte la línea en un garabato.
+ * MESES: seis por defecto —medio año entra de un vistazo en un móvil—, entre
+ * dos y veinticuatro. Menos de dos no es una evolución —sería un punto suelto—
+ * y más de veinticuatro convierte la línea en un garabato.
+ *
+ * DÍAS: catorce por defecto —dos semanas—, entre dos y sesenta. El tope es
+ * mayor porque cada punto pesa menos: sesenta días siguen siendo una línea
+ * legible, mientras que sesenta meses no lo serían.
  */
-export const EVOLUTION_MONTHS = { defecto: 6, minimo: 2, maximo: 24 } as const;
+export const EVOLUTION_RANGES = {
+  mes: { defecto: 6, minimo: 2, maximo: 24 },
+  dia: { defecto: 14, minimo: 2, maximo: 60 },
+} as const;
 
-function readMonths(value: unknown): number {
+function readEvolutionAmount(unidad: "dia" | "mes", value: unknown): number {
+  const rango = EVOLUTION_RANGES[unidad];
   const pedido = readInteger(value);
-  if (pedido <= 0) return EVOLUTION_MONTHS.defecto;
+  if (pedido <= 0) return rango.defecto;
 
-  return Math.min(Math.max(pedido, EVOLUTION_MONTHS.minimo), EVOLUTION_MONTHS.maximo);
+  return Math.min(Math.max(pedido, rango.minimo), rango.maximo);
 }
 
 function readOrder(value: unknown): ListOrder {
