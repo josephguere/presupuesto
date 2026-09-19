@@ -176,6 +176,11 @@ async function readPeriod(
   if (filtros.categoriaResumen) query.summaries = [filtros.categoriaResumen];
   if (filtros.grupo) query.groups = [filtros.grupo];
 
+  // El comentario se filtra en la CONSULTA, no en memoria como el comercio:
+  // `ilike` hace exactamente lo que hace falta —parcial y sin distinguir
+  // mayúsculas— y así el tope de filas se aplica ya filtrado.
+  if (filtros.comentario) query.commentContains = filtros.comentario;
+
   // Lo no contabilizado no entra: el chat responde sobre las mismas cifras que
   // enseña el Resumen. `getTransactions` ya lo excluye por defecto, pero
   // dejarlo explícito evita que un cambio del valor por defecto cambie en

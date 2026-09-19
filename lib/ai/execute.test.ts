@@ -27,6 +27,7 @@ function createQuery() {
   const ranges: Array<[string, "gte" | "lt", string]> = [];
   const orders: Array<[string, boolean]> = [];
   const ors: string[] = [];
+  const ilikes: Array<[string, string]> = [];
 
   const query = {
     select: () => query,
@@ -38,6 +39,17 @@ function createQuery() {
     abortSignal: () => query,
     or(expression: string) {
       ors.push(expression);
+      return query;
+    },
+    /**
+     * `ilike` de verdad: parcial y sin distinguir mayusculas.
+     *
+     * Se evalua en serio —no se acepta y ya— porque es justo lo que hay que
+     * comprobar de la busqueda por comentario. Un `NULL` nunca casa, igual
+     * que en SQL.
+     */
+    ilike(column: string, pattern: string) {
+      ilikes.push([column, pattern]);
       return query;
     },
     eq(column: string, value: unknown) {
@@ -65,6 +77,12 @@ function createQuery() {
       const data = state.rows.filter(
         (row) =>
           ors.every((expression) => matchesOr(row, expression)) &&
+          ilikes.every(([column, pattern]) => {
+            const value = row[column];
+            if (value === null || value === undefined) return false;
+            const needle = pattern.replace(/^%|%$/g, "").toLowerCase();
+            return String(value).toLowerCase().includes(needle);
+          }) &&
           equals.every(([column, value]) => row[column] === value) &&
           nulls.every((column) => row[column] === null) &&
           inLists.every(([column, values]) => values.includes(row[column])) &&
@@ -285,6 +303,102 @@ describe("filtros de clasificación", () => {
   });
 });
 
+describe("busqueda en el comentario", () => {
+  /** Los movimientos del acuerdo: dos con «Hanna», uno con «Lley». */
+  function conComentarios() {
+    return [
+      row({ id: "1", amount: "50.00", merchant: "PLAZA VEA", comment: "Regalo Hanna" }),
+      row({ id: "2", amount: "30.00", merchant: "WONG", comment: "cumple de hanna" }),
+      row({ id: "3", amount: "200.00", merchant: "BCP", comment: "Pago Lley septiembre" }),
+      row({ id: "4", amount: "15.00", merchant: "TAMBO", comment: null }),
+    ];
+  }
+
+  it("cuenta los movimientos que mencionan algo en el comentario", async () => {
+    state.rows = conComentarios();
+
+    const result = await ejecutar({ intencion: "transaction_count", comentario: "Hanna" });
+
+    expect(result.metricas[0].valor).toBe(2);
+  });
+
+  it("no distingue mayusculas", async () => {
+    // «Regalo Hanna» y «cumple de hanna» tienen que contar los dos.
+    state.rows = conComentarios();
+
+    const minusculas = await ejecutar({ intencion: "transaction_count", comentario: "hanna" });
+    const mayusculas = await ejecutar({ intencion: "transaction_count", comentario: "HANNA" });
+
+    expect(minusculas.metricas[0].valor).toBe(2);
+    expect(mayusculas.metricas[0].valor).toBe(2);
+  });
+
+  it("suma el gasto de los movimientos con ese comentario", async () => {
+    state.rows = conComentarios();
+
+    const result = await ejecutar({ intencion: "total_expenses", comentario: "Lley" });
+
+    expect(result.metricas[0].valor).toBe(200);
+  });
+
+  it("coincide de forma PARCIAL, no exacta", async () => {
+    // «Lley» esta dentro de «Pago Lley septiembre»: buscar la palabra suelta
+    // tiene que encontrarlo.
+    state.rows = conComentarios();
+
+    const result = await ejecutar({ intencion: "transaction_list", comentario: "Lley" });
+
+    expect(result.filas).toHaveLength(1);
+    expect(result.filas[0].etiqueta).toBe("BCP");
+  });
+
+  it("los movimientos SIN comentario nunca casan", async () => {
+    state.rows = conComentarios();
+
+    const result = await ejecutar({ intencion: "transaction_list", comentario: "a" });
+
+    expect(result.filas.map((fila) => fila.etiqueta)).not.toContain("TAMBO");
+  });
+
+  it("se combina con el periodo y con la categoria", async () => {
+    state.rows = [
+      row({
+        id: "1",
+        amount: "50.00",
+        category: "Regalos",
+        comment: "Regalo Hanna",
+        transaction_at: "2026-09-10T12:00:00-05:00",
+      }),
+      row({
+        id: "2",
+        amount: "80.00",
+        category: "Supermercado",
+        comment: "Regalo Hanna",
+        transaction_at: "2026-09-11T12:00:00-05:00",
+      }),
+    ];
+
+    const result = await ejecutar({
+      intencion: "total_expenses",
+      comentario: "Hanna",
+      categoria: "Regalos",
+    });
+
+    // Solo el de Regalos: los dos filtros se cruzan, no se suman.
+    expect(result.metricas[0].valor).toBe(50);
+  });
+
+  it("un comodin escrito por el usuario NO amplia la busqueda", async () => {
+    // `%` es comodin de SQL. Si se dejara pasar, «%» devolveria el historial
+    // entero y pareceria que el filtro no se aplico.
+    state.rows = conComentarios();
+
+    const result = await ejecutar({ intencion: "transaction_list", comentario: "%" });
+
+    expect(result.filas).toHaveLength(0);
+  });
+});
+
 describe("comercios", () => {
   it("encuentra todas las variantes del mismo nombre", async () => {
     // El caso real: seis formas distintas del mismo comercio en la base.
@@ -497,3 +611,107 @@ function matchesOr(row: Row, expression: string): boolean {
   if (isNull && row.category === null) return true;
   return values.includes(String(row.category));
 }
+
+describe("graficos", () => {
+  it("un desglose por grupo lleva barras", async () => {
+    state.rows = [
+      row({ amount: "100.00", category: "Supermercado" }),
+      row({ id: "2", amount: "500.00", category: "Servicios" }),
+    ];
+
+    const result = await ejecutar({ intencion: "group_breakdown" });
+    const chart = toChatResult(result)?.chart;
+
+    expect(chart?.type).toBe("bar");
+    expect(chart?.points.map((p) => p.label)).toEqual(["GASTOS FIJOS", "GASTOS VARIABLES"]);
+    expect(chart?.points.map((p) => p.value)).toEqual([500, 100]);
+  });
+
+  it("una comparacion de periodos lleva dos barras", async () => {
+    state.rows = [
+      row({ transaction_at: "2026-09-10T12:00:00-05:00", amount: "150.00" }),
+      row({ id: "2", transaction_at: "2026-08-10T12:00:00-05:00", amount: "100.00" }),
+    ];
+
+    const result = await ejecutar({ intencion: "period_comparison", periodo: "este_mes" });
+    const chart = toChatResult(result)?.chart;
+
+    expect(chart?.type).toBe("bar");
+    expect(chart?.points).toHaveLength(2);
+  });
+
+  it("una sola cifra NO lleva grafico", async () => {
+    // Una barra sola no compara nada.
+    state.rows = [row({ amount: "100.00" })];
+
+    const result = await ejecutar({ intencion: "total_expenses" });
+
+    expect(toChatResult(result)?.chart ?? null).toBeNull();
+  });
+
+  it("una lista de movimientos sueltos NO lleva grafico", async () => {
+    // Son hechos individuales, no una distribucion.
+    state.rows = [
+      row({ id: "1", amount: "10.00", merchant: "A" }),
+      row({ id: "2", amount: "20.00", merchant: "B" }),
+    ];
+
+    const result = await ejecutar({ intencion: "transaction_list" });
+
+    expect(toChatResult(result)?.chart ?? null).toBeNull();
+  });
+
+  it("con un solo punto NO se grafica", async () => {
+    // Un desglose de una sola categoria no tiene con que compararse.
+    state.rows = [row({ amount: "100.00", category: "Supermercado" })];
+
+    const result = await ejecutar({ intencion: "group_breakdown" });
+
+    expect(toChatResult(result)?.chart ?? null).toBeNull();
+  });
+
+  it("la fila de resto no entra en el grafico", async () => {
+    // «Otras N» es un agregado sintetico: pintarlo junto a categorias reales
+    // invitaria a compararlo con ellas.
+    //
+    // Hacen falta MAS de 15 categorias distintas —el tope del desglose— para
+    // que se genere esa fila, y todas del MISMO grupo para que el nivel sea
+    // «categoria» y no «resumen».
+    const variables = [
+      "Supermercado",
+      "Restaurantes",
+      "Delivery",
+      "Café y snacks",
+      "Transporte",
+      "Movilidad Taxi",
+      "Peajes y estacionamiento",
+      "Combustible",
+      "Salud",
+      "Farmacia",
+      "Cuidado personal",
+      "Entretenimiento",
+      "Videojuegos",
+      "Hogar",
+      "Ropa",
+      "Tecnología",
+      "Viajes",
+      "Regalos",
+    ];
+
+    state.rows = variables.map((category, index) =>
+      row({ id: `r-${index}`, amount: `${100 - index}.00`, category, merchant: `M${index}` }),
+    );
+
+    const result = await ejecutar({
+      intencion: "category_breakdown",
+      grupo: "GASTOS VARIABLES",
+    });
+
+    // Primero: que la fila de resto EXISTA, o la prueba no estaria probando nada.
+    expect(result.filas.some((fila) => fila.esResto)).toBe(true);
+
+    const chart = toChatResult(result)?.chart;
+    expect(chart).not.toBeNull();
+    expect(chart?.points.some((point) => point.label.startsWith("Otras"))).toBe(false);
+  });
+});

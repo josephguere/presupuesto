@@ -158,6 +158,14 @@ export interface TransactionFilters {
   summaries?: SummaryCategory[];
   groups?: Group[];
   merchant?: string;
+  /**
+   * Texto que debe CONTENER el comentario, sin distinguir mayúsculas.
+   *
+   * Es el único filtro de texto libre del modelo: el comentario guarda cosas
+   * como «Yape a David Pad*» o «PAGO CON NUMERO TELEFONO · 979336700», y
+   * buscarlo por igualdad exacta no serviría de nada.
+   */
+  commentContains?: string;
   limit?: number;
   /** Por defecto `activos`: un movimiento eliminado no existe para el resto. */
   status?: TransactionStatus;
@@ -506,6 +514,23 @@ export async function getTransactions(
 
   if (filters.merchant) query = query.eq("merchant", filters.merchant);
 
+  // Búsqueda parcial en el comentario. `ilike` no distingue mayúsculas, que es
+  // lo que se espera al buscar un nombre escrito de cualquier manera.
+  //
+  // Los movimientos SIN comentario quedan fuera por definición: en SQL, `NULL
+  // ILIKE '%x%'` no es verdadero, así que no hay que excluirlos a mano.
+  if (filters.commentContains !== undefined) {
+    const comment = toLikePattern(filters.commentContains);
+
+    // El término pedido se quedó en nada al quitarle los comodines. Devolver
+    // CERO filas y no «sin filtrar»: quien pidió buscar en el comentario
+    // esperaría un resultado filtrado, y enseñarle el historial entero como si
+    // hubiera coincidido todo sería mentirle.
+    if (!comment) return [];
+
+    query = query.ilike("comment", comment);
+  }
+
   // Baja lógica. Se aplica SIEMPRE y en la propia consulta, no al pintar: así
   // ninguna vista ni ningún indicador puede olvidarse de excluir las bajas.
   query = query.eq("activo", filters.status !== "eliminados");
@@ -522,6 +547,24 @@ export async function getTransactions(
   // niveles antes de consultar, así que lo que vuelve de PostgreSQL es
   // exactamente lo pedido.
   return (data ?? []).map(toTransaction);
+}
+
+/**
+ * Prepara un término para un `ILIKE '%término%'`.
+ *
+ * Se QUITAN los comodines `%` y `_` en vez de escaparlos: PostgREST no expone
+ * la cláusula `ESCAPE`, así que dejarlos pasar convertiría un «50%» escrito por
+ * el usuario en un comodín que devolvería medio historial. Un comentario no se
+ * busca con comodines, así que quitarlos no pierde nada real.
+ *
+ * Devuelve `null` si no queda nada buscable, para no filtrar por la cadena
+ * vacía —que casaría con todo y parecería que el filtro no se aplicó—.
+ */
+function toLikePattern(term: string | undefined): string | null {
+  if (!term) return null;
+
+  const limpio = term.replace(/[%_\\]/g, "").trim();
+  return limpio.length > 0 ? `%${limpio}%` : null;
 }
 
 /**

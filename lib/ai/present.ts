@@ -1,7 +1,7 @@
 import { MAX_ROWS_TO_MODEL } from "./limits";
 import type { ExecutionResult, FiltrosAplicados } from "./result";
 import type { IntentName } from "./intent";
-import type { ChatResult, ChatResultRow } from "@/lib/chat/types";
+import type { ChatChart, ChatResult, ChatResultRow } from "@/lib/chat/types";
 
 /**
  * Las dos proyecciones del resultado. Una hacia el modelo, otra hacia el
@@ -128,6 +128,7 @@ function describeFilters(filtros: FiltrosAplicados): string[] {
   if (filtros.categoriaResumen) partes.push(`categoría resumen ${filtros.categoriaResumen}`);
   if (filtros.grupo) partes.push(`grupo ${filtros.grupo}`);
   if (filtros.sinCategoria) partes.push("solo movimientos sin categoría");
+  if (filtros.comentario) partes.push(`comentario que contiene «${filtros.comentario}»`);
 
   if (filtros.comercio) {
     // Cómo se emparejó importa: con «familia» se sumaron variantes del mismo
@@ -195,11 +196,66 @@ export function toChatResult(result: ExecutionResult): ChatResult | null {
     intent: result.intencion,
     columns: columnsFor(result.intencion, result.filtros),
     rows,
+    chart: toChatChart(result),
     total: total?.valor ?? null,
     periodLabel: result.periodo.etiqueta,
     omitted: result.filasOmitidas,
   };
 }
+
+/**
+ * El gráfico que corresponde a la respuesta, o `null` si no hay ninguno.
+ *
+ * QUIÉN DECIDE. Lo decide la INTENCIÓN, que es la lectura que el modelo hizo de
+ * la pregunta. Si entendió «category_breakdown» es porque le preguntaron cómo
+ * se reparte el gasto, y eso se lee mejor en barras; si entendió
+ * «total_expenses» es una cifra suelta, y una barra sola no dice nada.
+ *
+ * Se resuelve aquí y no pidiéndole al modelo un campo «quieroGráfico» por dos
+ * motivos: no gasta ni un token más, y no puede pedir la línea temporal de un
+ * único dato. La decisión del modelo ya está tomada —al elegir la intención— y
+ * esto solo la traduce.
+ *
+ * NUNCA se grafica:
+ *
+ *   · Una sola cifra. No hay nada que comparar.
+ *   · Una lista de movimientos sueltos: son hechos individuales, no una
+ *     distribución, y veinte barras de nombres de comercio no se leen.
+ *   · Un único punto, venga de donde venga.
+ *
+ * La fila de resto —«Otras 7»— se queda fuera: es un agregado sintético y
+ * pintarlo junto a categorías reales invita a compararlo con ellas.
+ */
+export function toChatChart(result: ExecutionResult): ChatChart | null {
+  const type = CHART_BY_INTENT[result.intencion];
+  if (!type) return null;
+
+  const points = result.filas
+    .filter((fila) => !fila.esResto)
+    .map((fila) => ({ label: fila.etiqueta, value: fila.total }));
+
+  // Con un solo punto no hay comparación ni evolución que enseñar.
+  if (points.length < 2) return null;
+
+  return { type, points, unit: "PEN" };
+}
+
+/**
+ * Qué intenciones se entienden mejor con un gráfico, y de qué tipo.
+ *
+ * Las que no están aquí no lo llevan, y eso es la mayoría a propósito: el
+ * gráfico acompaña a la respuesta, no la sustituye.
+ */
+const CHART_BY_INTENT: Partial<Record<IntentName, ChatChart["type"]>> = {
+  // Repartos: barras para comparar de un vistazo quién se lleva más.
+  category_breakdown: "bar",
+  group_breakdown: "bar",
+  // Los más altos ya vienen ordenados: la barra enseña la diferencia entre
+  // el primero y el resto, que es justo lo que se pregunta.
+  highest_transactions: "bar",
+  // Dos períodos, dos barras.
+  period_comparison: "bar",
+};
 
 /** Las dos o tres cabeceras que corresponden a la intención. */
 export function columnsFor(intent: IntentName, filtros: FiltrosAplicados): string[] {

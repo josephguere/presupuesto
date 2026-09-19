@@ -36,6 +36,7 @@ function createQuery() {
 
   const orders: Array<[string, boolean]> = [];
   const ors: string[] = [];
+  const ilikes: Array<[string, string]> = [];
 
   const query = {
     select(columns: string) {
@@ -57,6 +58,17 @@ function createQuery() {
      */
     or(expression: string) {
       ors.push(expression);
+      return query;
+    },
+    /**
+     * `ilike` de verdad: parcial y sin distinguir mayusculas.
+     *
+     * Se evalua en serio —no se acepta y ya— porque es justo lo que hay que
+     * comprobar de la busqueda por comentario. Un `NULL` nunca casa, igual
+     * que en SQL.
+     */
+    ilike(column: string, pattern: string) {
+      ilikes.push([column, pattern]);
       return query;
     },
     eq(column: string, value: unknown) {
@@ -87,6 +99,12 @@ function createQuery() {
       const data = state.rows.filter(
         (row) =>
           ors.every((expression) => matchesOr(row, expression)) &&
+          ilikes.every(([column, pattern]) => {
+            const value = row[column];
+            if (value === null || value === undefined) return false;
+            const needle = pattern.replace(/^%|%$/g, "").toLowerCase();
+            return String(value).toLowerCase().includes(needle);
+          }) &&
           equals.every(([column, value]) => row[column] === value) &&
           nulls.every((column) => row[column] === null) &&
           notNulls.every((column) => row[column] !== null) &&

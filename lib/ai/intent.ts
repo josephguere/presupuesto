@@ -154,6 +154,12 @@ export function buildIntentResponseSchema(catalog: Catalog): Record<string, unkn
         type: "string",
         description: "Nombre del comercio tal como lo dijo. Cadena vacía si no lo dijo.",
       },
+      comentario: {
+        type: "string",
+        description:
+          "Texto que debe contener el comentario del movimiento. Solo si el " +
+          "usuario habla del comentario, la nota o la descripción. Cadena vacía si no.",
+      },
       orden: { type: "string", enum: [...LIST_ORDERS] },
       limite: { type: "integer", description: "Cuántos movimientos pidió. 0 si no lo dijo." },
     },
@@ -175,6 +181,7 @@ export function buildIntentResponseSchema(catalog: Catalog): Record<string, unkn
       "grupo",
       "sinCategoria",
       "comercio",
+      "comentario",
       "orden",
       "limite",
     ],
@@ -192,6 +199,15 @@ export interface IntentFilters {
   grupo?: Group;
   sinCategoria?: boolean;
   comercio?: string;
+  /**
+   * Texto que debe aparecer en el comentario del movimiento.
+   *
+   * Es un FILTRO más, no una intención nueva: «¿cuánto gasté en movimientos con
+   * Lley en el comentario?» es un `total_expenses` con este campo puesto, y
+   * «muéstrame los que dicen Hanna» es un `transaction_list`. Así funciona con
+   * las doce intenciones sin añadir ninguna.
+   */
+  comentario?: string;
 }
 
 export type Intent =
@@ -560,6 +576,12 @@ function readFilters(campos: Record<string, unknown>, catalog: Catalog): FilterR
   const comercio = readTerm(campos.comercio);
   if (comercio) value.comercio = comercio.slice(0, 80);
 
+  // Igual que el comercio: TEXTO LIBRE, no hay catálogo de comentarios que
+  // validar. No acaba en ningún `eq`; va a un `ilike` con los comodines ya
+  // quitados en `lib/transactions.ts`.
+  const comentario = readTerm(campos.comentario);
+  if (comentario) value.comentario = comentario.slice(0, 80);
+
   return { value };
 }
 
@@ -611,11 +633,13 @@ function readMetric(value: unknown): ComparisonMetric {
 export function historyNote(intent: Intent, period: ResolvedPeriod): string {
   const partes = [intent.intencion, period.label];
 
-  const { categoria, categoriaResumen, grupo, comercio, sinCategoria } = intent.filtros;
+  const { categoria, categoriaResumen, grupo, comercio, comentario, sinCategoria } =
+    intent.filtros;
   if (categoria) partes.push(`categoría ${categoria}`);
   if (categoriaResumen) partes.push(`resumen ${categoriaResumen}`);
   if (grupo) partes.push(`grupo ${grupo}`);
   if (comercio) partes.push(`comercio ${comercio}`);
+  if (comentario) partes.push(`comentario ${comentario}`);
   if (sinCategoria) partes.push("sin categoría");
 
   return partes.join(" · ");

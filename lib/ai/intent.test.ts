@@ -39,6 +39,7 @@ function respuesta(overrides: Record<string, unknown> = {}) {
     grupo: "NINGUNA",
     sinCategoria: false,
     comercio: "",
+    comentario: "",
     orden: "recientes",
     limite: 0,
     ...overrides,
@@ -235,6 +236,82 @@ describe("la inyección no puede ampliar lo que se puede hacer", () => {
 
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(parsed.intent.filtros.comercio?.length).toBe(80);
+  });
+});
+
+describe("filtro por comentario", () => {
+  it("se lee como un filtro mas, no como una intencion nueva", () => {
+    // Las cuatro preguntas del acuerdo son intenciones que YA existian, con
+    // este campo puesto. No hizo falta una decimotercera.
+    const casos = [
+      ["transaction_count", "Hanna"],
+      ["total_expenses", "Lley"],
+      ["transaction_list", "Hanna"],
+    ] as const;
+
+    for (const [intencion, comentario] of casos) {
+      const parsed = parseIntent(respuesta({ intencion, comentario }), catalogo, AHORA);
+
+      expect(parsed.ok).toBe(true);
+      if (parsed.ok) expect(parsed.intent.filtros.comentario).toBe(comentario);
+    }
+  });
+
+  it("el campo vacio no pone filtro", () => {
+    const parsed = parseIntent(respuesta({ comentario: "" }), catalogo, AHORA);
+
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.intent.filtros.comentario).toBeUndefined();
+  });
+
+  it("se recorta un comentario larguisimo", () => {
+    const parsed = parseIntent(
+      respuesta({ comentario: "x".repeat(500) }),
+      catalogo,
+      AHORA,
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.intent.filtros.comentario?.length).toBe(80);
+  });
+
+  it("convive con los demas filtros", () => {
+    const parsed = parseIntent(
+      respuesta({ intencion: "total_expenses", comentario: "Lley", categoria: "Delivery" }),
+      catalogo,
+      AHORA,
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.intent.filtros.comentario).toBe("Lley");
+      expect(parsed.intent.filtros.categoria).toBe("Delivery");
+    }
+  });
+
+  it("viaja en la nota del historial", () => {
+    // Para que «¿y el mes anterior?» conserve la busqueda por comentario.
+    const parsed = parseIntent(
+      respuesta({ intencion: "total_expenses", comentario: "Hanna" }),
+      catalogo,
+      AHORA,
+    );
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+
+    const period = resolvePeriod(parsed.intent.periodo, AHORA);
+    expect(historyNote(parsed.intent, period)).toContain("comentario Hanna");
+  });
+
+  it("el esquema que ve el modelo incluye el campo", () => {
+    const schema = buildIntentResponseSchema(catalogo) as {
+      properties: Record<string, unknown>;
+      required: string[];
+    };
+
+    expect(schema.properties.comentario).toBeDefined();
+    expect(schema.required).toContain("comentario");
   });
 });
 
